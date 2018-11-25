@@ -413,6 +413,7 @@ fn handle_editing(input: Option<Input>, text: &mut ShapedString, position: &mut 
     true
 }
 
+#[derive(Debug)]
 enum Direction {
     Left,
     Right,
@@ -421,26 +422,33 @@ enum Direction {
 }
 
 // FIXME: read terminfo instead of using hardcoded values
-fn handle_navigation<'a, F: FnOnce(Direction) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
+fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
     match input {
         Some(Input::KeyLeft) => {
             if !text.at_beginning(position) {
                 text.move_left(position);
-            } else if let Some(new_text) = navigate(Direction::Left) {
+            } else if let Some(new_text) = navigate(Direction::Left, false) {
                 *position = TextPosition::end(new_text);
             }
         },
         Some(Input::Unknown(249)) => { // Ctrl + Left
-            if let Some(new_text) = navigate(Direction::Left) {
+            if let Some(new_text) = navigate(Direction::Left, false) {
                 *position = TextPosition::end(new_text);
             } else {
+                *position = TextPosition::beginning();
+            }
+        },
+        Some(Input::KeyHome) => {
+            if !text.at_beginning(position) {
+                *position = TextPosition::beginning();
+            } else if let Some(_new_text) = navigate(Direction::Left, true) {
                 *position = TextPosition::beginning();
             }
         },
         Some(Input::KeyRight) => {
             if !text.at_end(position) {
                 text.move_right(position);
-            } else if let Some(_new_text) = navigate(Direction::Right) {
+            } else if let Some(_new_text) = navigate(Direction::Right, false) {
                 *position = TextPosition::beginning();
             } else {
                 // TODO: what if the last cell doesn't fit on the screen?
@@ -448,7 +456,7 @@ fn handle_navigation<'a, F: FnOnce(Direction) -> Option<&'a ShapedString>>(input
             }
         },
         Some(Input::Unknown(264)) => { // Ctrl + Right
-            if let Some(_new_text) = navigate(Direction::Right) {
+            if let Some(_new_text) = navigate(Direction::Right, false) {
                 *position = TextPosition::beginning();
             } else if !text.at_end(position) {
                 *position = TextPosition::end(text);
@@ -456,13 +464,22 @@ fn handle_navigation<'a, F: FnOnce(Direction) -> Option<&'a ShapedString>>(input
                 return true;
             }
         },
+        Some(Input::KeyEnd) => {
+            if !text.at_end(position) {
+                *position = TextPosition::end(text);
+            } else if let Some(new_text) = navigate(Direction::Right, true) {
+                *position = TextPosition::end(new_text);
+            } else {
+                return true;
+            }
+        },
         Some(Input::KeyUp) | Some(Input::Unknown(270)) => { // [Ctrl +] Up
-            if let Some(new_text) = navigate(Direction::Up) {
+            if let Some(new_text) = navigate(Direction::Up, false) {
                 new_text.move_vert(position);
             }
         },
         Some(Input::KeyDown) | Some(Input::Unknown(227)) => { // [Ctrl +] Down
-            if let Some(new_text) = navigate(Direction::Down) {
+            if let Some(new_text) = navigate(Direction::Down, false) {
                 new_text.move_vert(position);
             }
         },
@@ -658,7 +675,7 @@ fn main() {
             Mode::Filter { unfiltered_view, mut query, mut query_pos } => {
                 // Editing
                 let refilter = handle_editing(input, &mut query, &mut query_pos);
-                handle_navigation(input, &query, &mut query_pos, |_| None);
+                handle_navigation(input, &query, &mut query_pos, |_, _| None);
                 if refilter {
                     view = unfiltered_view.clone();
                     let mut index = 0;
@@ -717,13 +734,19 @@ fn main() {
             }
             // Navigation
             let mut new_pos = cursor.in_cell_pos;
-            try_fit_x = handle_navigation(input, get_cell(&document, &view, &cursor), &mut new_pos, |dir| {
+            try_fit_x = handle_navigation(input, get_cell(&document, &view, &cursor), &mut new_pos, |dir, skip| {
                 match dir {
-                    Direction::Left if cursor.col_index > 0 => {
+                    Direction::Left if cursor.col_index > 0 => if skip {
+                        cursor.col_index = 0;
+                        cursor.cell_display_column = 0;
+                    } else {
                         cursor.col_index -= 1;
                         cursor.cell_display_column -= column_widths[view.cols[cursor.col_index]] + 3;
                     },
-                    Direction::Right if cursor.col_index + 1 < view.cols.len() => {
+                    Direction::Right if cursor.col_index + 1 < view.cols.len() => if skip {
+                        cursor.col_index = view.cols.len() - 1;
+                        cursor.cell_display_column = view.cols[..cursor.col_index].iter().map(|&col_id| column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
+                    } else {
                         cursor.col_index += 1;
                         cursor.cell_display_column += column_widths[view.cols[cursor.col_index - 1]] + 3;
                     },
@@ -838,13 +861,6 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::KeyHome) => {
-                cursor.col_index = 0;
-                cursor.cell_display_column = 0;
-                data_entry_start_index = cursor.col_index;
-                data_entry_start_display_column = cursor.cell_display_column;
-                cursor.in_cell_pos = TextPosition::beginning();
-            },
             Some(Input::Unknown(262)) | Some(Input::Unknown(266)) => { // [Ctrl +] Alt + Right
                 let current_col_id = view.cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -857,13 +873,6 @@ fn main() {
                 cursor.col_index += 1;
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
-            },
-            Some(Input::KeyEnd) => {
-                cursor.col_index = view.cols.len() - 1;
-                cursor.cell_display_column = view.cols[..cursor.col_index].iter().map(|&col_id| column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
-                data_entry_start_index = cursor.col_index;
-                data_entry_start_display_column = cursor.cell_display_column;
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &view, &cursor));
             },
             Some(Input::Character('\t')) => {
                 if cursor.col_index + 1 == view.cols.len() {
