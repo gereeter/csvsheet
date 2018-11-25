@@ -6,6 +6,7 @@ extern crate csv;
 extern crate unicode_segmentation;
 extern crate unicode_width;
 extern crate terminfo;
+extern crate clap;
 
 #[cfg(unix)]
 extern crate nix;
@@ -489,6 +490,65 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
 }
 
 fn main() {
+    let arg_matches = clap::App::new("CSVSheet")
+                                    .version("0.1")
+                                    .author("Jonathan S <gereeter+code@gmail.com>")
+                                    .about("View and edit CSV/DSV/TSV files")
+                                    .arg(clap::Arg::with_name("delimiter")
+                                        .short("d")
+                                        .long("delimiter")
+                                        .help("Sets the delimiter to split a line into records")
+                                        .takes_value(true))
+                                    .arg(clap::Arg::with_name("FILE")
+                                        .help("Sets the file to view/edit")
+                                        .required(true)
+                                        .index(1))
+                                    .get_matches();
+
+    let file_name_os_str = arg_matches.value_of_os("FILE").unwrap();
+    let file_name = Path::new(&file_name_os_str);
+
+    let delimiter = arg_matches.value_of_os("delimiter").and_then(|delim_os| delim_os.to_str()).and_then(|delim_str| {
+        if delim_str.len() == 1 {
+            Some(delim_str.as_bytes()[0])
+        } else {
+            // FIXME: Maybe just error instead?
+            eprintln!("WARNING: non-byte delimiter provided, falling back to file extension detection");
+            None
+        }
+    }).or_else(|| file_name.extension().and_then(|ext| {
+        if ext == "dsv" {
+            Some(b'|')
+        } else if ext == "tsv" {
+            Some(b'\t')
+        } else {
+            None
+        }
+    })).unwrap_or(b',');
+
+    let reader = ReaderBuilder::new().delimiter(delimiter)
+                                     .has_headers(false) // we handle this ourselves
+                                     .flexible(true) // We'll fix up the file
+                                     .from_path(file_name)
+                                     .expect("Unable to read file");
+    let mut document = Document::new(
+        reader.into_records()
+              .map(|record| {
+                  record.expect("Problem reading record")
+                        .iter()
+                        .map(|s| ShapedString::from_string(s.to_owned()))
+                        .collect()
+              })
+             .collect()
+    );
+    let mut view = document.canonical_view.clone();
+    let mut column_widths = IndexVec::from_vec(vec![0; document.width()]);
+    for row in &document.data {
+        for (cell, col_width) in row.iter().zip(column_widths.iter_mut()) {
+            *col_width = cmp::max(*col_width, cell.total_width);
+        }
+    }
+
     static CTRL_Z_COUNT: AtomicUsize = ATOMIC_USIZE_INIT;
     static CTRL_C_COUNT: AtomicUsize = ATOMIC_USIZE_INIT;
 
@@ -536,40 +596,6 @@ fn main() {
     let stdout = std::io::stdout();
     //let mut screen = recurses::Screen::new(&stdin, &stdout);
 
-
-    let file_name_os_str = std::env::args_os().nth(1).expect("No file provided to edit");
-    let file_name = Path::new(&file_name_os_str);
-    let mut delimiter = b',';
-    if let Some(ext) = file_name.extension() {
-        if ext == "dsv" {
-            delimiter = b'|';
-        } else if ext == "tsv" {
-            delimiter = b'\t';
-        }
-    }
-
-    let reader = ReaderBuilder::new().delimiter(delimiter) // TODO: configurable
-                                     .has_headers(false) // we handle this ourselves
-                                     .flexible(true) // We'll fix up the file
-                                     .from_path(file_name)
-                                     .expect("Unable to read file");
-    let mut document = Document::new(
-        reader.into_records()
-              .map(|record| {
-                  record.expect("Problem reading record")
-                        .iter()
-                        .map(|s| ShapedString::from_string(s.to_owned()))
-                        .collect()
-              })
-             .collect()
-    );
-    let mut view = document.canonical_view.clone();
-    let mut column_widths = IndexVec::from_vec(vec![0; document.width()]);
-    for row in &document.data {
-        for (cell, col_width) in row.iter().zip(column_widths.iter_mut()) {
-            *col_width = cmp::max(*col_width, cell.total_width);
-        }
-    }
 
     // TODO: check for errors!
     let window = initscr();
