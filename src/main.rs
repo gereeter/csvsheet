@@ -537,11 +537,21 @@ fn main() {
     //let mut screen = recurses::Screen::new(&stdin, &stdout);
 
 
-    let file_name = std::env::args_os().nth(1).expect("No file provided to edit");
-    let reader = ReaderBuilder::new().delimiter(b'|') // TODO: configurable
+    let file_name_os_str = std::env::args_os().nth(1).expect("No file provided to edit");
+    let file_name = Path::new(&file_name_os_str);
+    let mut delimiter = b',';
+    if let Some(ext) = file_name.extension() {
+        if ext == "dsv" {
+            delimiter = b'|';
+        } else if ext == "tsv" {
+            delimiter = b'\t';
+        }
+    }
+
+    let reader = ReaderBuilder::new().delimiter(delimiter) // TODO: configurable
                                      .has_headers(false) // we handle this ourselves
                                      .flexible(true) // We'll fix up the file
-                                     .from_path(Path::new(&file_name))
+                                     .from_path(file_name)
                                      .expect("Unable to read file");
     let mut document = Document::new(
         reader.into_records()
@@ -1000,8 +1010,11 @@ fn main() {
             redraw = true;
             try_fit_x = true;
         }
-        if (view.headers <= target_y && offset_y + view.headers > target_y) || offset_y + rows_shown <= target_y {
+        if offset_y + view.headers > target_y || offset_y + rows_shown <= target_y {
             offset_y = target_y.saturating_sub(screen_y);
+            if target_y >= view.headers && offset_y + view.headers > target_y {
+                offset_y = target_y - view.headers;
+            }
             redraw = true;
         }
         if try_fit_x {
