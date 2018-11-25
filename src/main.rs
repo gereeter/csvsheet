@@ -479,8 +479,18 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
                 new_text.move_vert(position);
             }
         },
+        Some(Input::KeyPPage) => { // PageUp
+            if let Some(new_text) = navigate(Direction::Up, true) {
+                new_text.move_vert(position);
+            }
+        },
         Some(Input::KeyDown) | Some(Input::Unknown(227)) => { // [Ctrl +] Down
             if let Some(new_text) = navigate(Direction::Down, false) {
+                new_text.move_vert(position);
+            }
+        },
+        Some(Input::KeyNPage) => { // PageDown
+            if let Some(new_text) = navigate(Direction::Down, true) {
                 new_text.move_vert(position);
             }
         },
@@ -786,10 +796,16 @@ fn main() {
                         cursor.col_index += 1;
                         cursor.cell_display_column += column_widths[view.cols[cursor.col_index - 1]] + 3;
                     },
-                    Direction::Up if cursor.row_index > 0 => { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
+                    Direction::Up if cursor.row_index > 0 => if skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
+                        let page_size = height - view.headers;
+                        cursor.row_index = cursor.row_index.saturating_sub(page_size);
+                    } else {
                         cursor.row_index -= 1;
                     },
-                    Direction::Down if cursor.row_index + 1 < view.rows.len() => {
+                    Direction::Down if cursor.row_index + 1 < view.rows.len() => if skip {
+                        let page_size = height - view.headers;
+                        cursor.row_index = cmp::min(cursor.row_index + page_size, view.rows.len() - 1);
+                    } else {
                         cursor.row_index += 1;
                     },
                     _ => {
@@ -958,16 +974,6 @@ fn main() {
                 cursor.row_index += 1;
                 get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
-            },
-            Some(Input::KeyPPage) => { // PageUp
-                let page_size = height - view.headers;
-                cursor.row_index = cursor.row_index.saturating_sub(page_size);
-                get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
-            },
-            Some(Input::KeyNPage) => { // PageDown
-                let page_size = height - view.headers;
-                cursor.row_index = cmp::min(cursor.row_index + page_size, view.rows.len() - 1);
-                get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
             },
             // ---------------------- Mouse Input ------------------------
             Some(Input::KeyMouse) => {
