@@ -21,6 +21,7 @@ use curses::{Window, Input};
 use std::cmp;
 use std::iter;
 use std::path::Path;
+use std::borrow::Cow;
 
 use csv::ReaderBuilder;
 use unicode_segmentation::UnicodeSegmentation;
@@ -698,7 +699,7 @@ fn main() {
     loop {
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
-        let mut warn_message = None;
+        let mut warn_message: Option<Cow<'static, str>> = None;
 
         let mut input = window.get_ch().ok();
 
@@ -906,7 +907,7 @@ fn main() {
                         document.modified = false;
                     }
                 } else {
-                    warn_message = Some("Nothing to undo.");
+                    warn_message = Some("Nothing to undo.".into());
                 }
             },
             Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
@@ -919,11 +920,11 @@ fn main() {
                         document.modified = false;
                     }
                 } else {
-                    warn_message = Some("Nothing to redo.");
+                    warn_message = Some("Nothing to redo.".into());
                 }
             },
             Some(Input::Character('\u{3}')) => { // Ctrl + C
-                warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]");
+                warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]".into());
             },
             Some(Input::Character('\u{6}')) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
@@ -952,7 +953,7 @@ fn main() {
                     get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                     redraw = true;
                 } else {
-                    warn_message = Some("Cannot hide the only row on the screen.");
+                    warn_message = Some("Cannot hide the only row on the screen.".into());
                 }
             },
             Some(Input::Character('\u{11}')) => { // Ctrl + Q
@@ -995,13 +996,13 @@ fn main() {
                     }
                     redraw = true;
                 } else {
-                    warn_message = Some("Cannot hide the only column on the screen.");
+                    warn_message = Some("Cannot hide the only column on the screen.".into());
                 }
             },
             Some(Input::Character('\u{1b}')) => { // Escape
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.is_at_base() {
-                    warn_message = Some("No views to pop. Press Ctrl+Q to exit.");
+                    warn_message = Some("No views to pop. Press Ctrl+Q to exit.".into());
                 } else {
                     let cursor_row = document.views.top().rows[cursor.row_index];
                     let cursor_col = document.views.top().cols[cursor.col_index];
@@ -1015,9 +1016,13 @@ fn main() {
             Some(Input::Character('\u{13}')) => { // Ctrl + S
                 undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
-                // TODO: display error to the user
-                if let Ok(_) = document.save_to(&file_name) {
-                    undo_state.pristine_state = Some(undo_state.undo_stack.len());
+                match document.save_to(&file_name) {
+                    Ok(_) => {
+                        undo_state.pristine_state = Some(undo_state.undo_stack.len());
+                    },
+                    Err(err) => {
+                        warn_message = Some(format!("Failed to save: {}", err).into());
+                    }
                 }
             },
             // ------------------------------------------ Navigation ----------------------------------------------
@@ -1154,7 +1159,7 @@ fn main() {
                 if changed {
                     redraw = true;
                 } else {
-                    warn_message = Some("Only rows/columns that are empty can be deleted.");
+                    warn_message = Some("Only rows/columns that are empty can be deleted.".into());
                 }
             },
             // ---------------------- Mouse Input ------------------------
@@ -1202,8 +1207,12 @@ fn main() {
                 Some(Input::Character('y')) => {
                     // TODO: track renames and follow the file
                     // TODO: display error to the user
-                    if let Ok(_) = document.save_to(&file_name) {
-                        break;
+                    match document.save_to(&file_name) {
+                        Ok(_) => break,
+                        Err(err) => {
+                            new_mode = Mode::Normal;
+                            warn_message = Some(format!("Failed to save: {}", err).into());
+                        }
                     }
                 },
                 Some(Input::Character('n')) => {
@@ -1211,7 +1220,6 @@ fn main() {
                 },
                 Some(Input::Character('\u{1b}')) => { // Escape
                     new_mode = Mode::Normal;
-                    redraw = true;
                 },
                 _ => {
                     new_mode = Mode::Quitting;
@@ -1283,7 +1291,7 @@ fn main() {
         } else if let Mode::Quitting = mode {
             window.mv_add_str(height as i32 - 1, 0, "Save before quitting [y/n/Esc]? ");
         } else if let Some(message) = warn_message {
-            window.mv_add_str(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, message);
+            window.mv_add_str(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, &message);
         } else {
             // TODO(efficiency): avoid allocations
             let status = format!(
