@@ -533,18 +533,24 @@ enum Direction {
     Down
 }
 
+enum Skip {
+    One,
+    Many,
+    All
+}
+
 // FIXME: read terminfo instead of using hardcoded values
-fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
+fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
     match input {
         Some(Input::Special(ncurses::KEY_LEFT)) => {
             if !text.at_beginning(position) {
                 text.move_left(position);
-            } else if let Some(new_text) = navigate(Direction::Left, false) {
+            } else if let Some(new_text) = navigate(Direction::Left, Skip::One) {
                 *position = TextPosition::end(new_text);
             }
         },
         Some(Input::Special(553)) => { // Ctrl + Left
-            if let Some(new_text) = navigate(Direction::Left, false) {
+            if let Some(new_text) = navigate(Direction::Left, Skip::One) {
                 *position = TextPosition::end(new_text);
             } else {
                 *position = TextPosition::beginning();
@@ -553,14 +559,14 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
         Some(Input::Special(ncurses::KEY_HOME)) => {
             if !text.at_beginning(position) {
                 *position = TextPosition::beginning();
-            } else if let Some(_new_text) = navigate(Direction::Left, true) {
+            } else if let Some(_new_text) = navigate(Direction::Left, Skip::All) {
                 *position = TextPosition::beginning();
             }
         },
         Some(Input::Special(ncurses::KEY_RIGHT)) => {
             if !text.at_end(position) {
                 text.move_right(position);
-            } else if let Some(_new_text) = navigate(Direction::Right, false) {
+            } else if let Some(_new_text) = navigate(Direction::Right, Skip::One) {
                 *position = TextPosition::beginning();
             } else {
                 // TODO: what if the last cell doesn't fit on the screen?
@@ -568,7 +574,7 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
             }
         },
         Some(Input::Special(568)) => { // Ctrl + Right
-            if let Some(_new_text) = navigate(Direction::Right, false) {
+            if let Some(_new_text) = navigate(Direction::Right, Skip::One) {
                 *position = TextPosition::beginning();
             } else if !text.at_end(position) {
                 *position = TextPosition::end(text);
@@ -579,29 +585,39 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
         Some(Input::Special(ncurses::KEY_END)) => {
             if !text.at_end(position) {
                 *position = TextPosition::end(text);
-            } else if let Some(new_text) = navigate(Direction::Right, true) {
+            } else if let Some(new_text) = navigate(Direction::Right, Skip::All) {
                 *position = TextPosition::end(new_text);
             } else {
                 return true;
             }
         },
         Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(574)) => { // [Ctrl +] Up
-            if let Some(new_text) = navigate(Direction::Up, false) {
+            if let Some(new_text) = navigate(Direction::Up, Skip::One) {
                 new_text.move_vert(position);
             }
         },
         Some(Input::Special(ncurses::KEY_PPAGE)) => { // PageUp
-            if let Some(new_text) = navigate(Direction::Up, true) {
+            if let Some(new_text) = navigate(Direction::Up, Skip::Many) {
+                new_text.move_vert(position);
+            }
+        },
+        Some(Input::Special(563)) => { // Ctrl + PageUp
+            if let Some(new_text) = navigate(Direction::Up, Skip::All) {
                 new_text.move_vert(position);
             }
         },
         Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(531)) => { // [Ctrl +] Down
-            if let Some(new_text) = navigate(Direction::Down, false) {
+            if let Some(new_text) = navigate(Direction::Down, Skip::One) {
                 new_text.move_vert(position);
             }
         },
         Some(Input::Special(ncurses::KEY_NPAGE)) => { // PageDown
-            if let Some(new_text) = navigate(Direction::Down, true) {
+            if let Some(new_text) = navigate(Direction::Down, Skip::Many) {
+                new_text.move_vert(position);
+            }
+        },
+        Some(Input::Special(558)) => { // Ctrl + PageDown
+            if let Some(new_text) = navigate(Direction::Down, Skip::All) {
                 new_text.move_vert(position);
             }
         },
@@ -864,31 +880,49 @@ fn main() {
             let mut new_pos = cursor.in_cell_pos;
             try_fit_x = handle_navigation(input, get_cell(&document, &cursor), &mut new_pos, |dir, skip| {
                 match dir {
-                    Direction::Left if cursor.col_index > 0 => if skip {
-                        cursor.col_index = 0;
-                        cursor.cell_display_column = 0;
-                    } else {
-                        cursor.col_index -= 1;
-                        cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                    Direction::Left if cursor.col_index > 0 => match skip {
+                        Skip::Many | Skip::All => {
+                            cursor.col_index = 0;
+                            cursor.cell_display_column = 0;
+                        },
+                        Skip::One => {
+                            cursor.col_index -= 1;
+                            cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        }
                     },
-                    Direction::Right if cursor.col_index + 1 < document.views.top().cols.len() => if skip {
-                        cursor.col_index = document.views.top().cols.len() - 1;
-                        cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
-                    } else {
-                        cursor.col_index += 1;
-                        cursor.cell_display_column += document.column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
+                    Direction::Right if cursor.col_index + 1 < document.views.top().cols.len() => match skip {
+                        Skip::Many | Skip::All => {
+                            cursor.col_index = document.views.top().cols.len() - 1;
+                            cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
+                        },
+                        Skip::One => {
+                            cursor.col_index += 1;
+                            cursor.cell_display_column += document.column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
+                        }
                     },
-                    Direction::Up if cursor.row_index > 0 => if skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
-                        let page_size = height - document.views.top().headers;
-                        cursor.row_index = cursor.row_index.saturating_sub(page_size);
-                    } else {
-                        cursor.row_index -= 1;
+                    Direction::Up if cursor.row_index > 0 => match skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
+                        Skip::All => {
+                            cursor.row_index = 0;
+                        },
+                        Skip::Many => {
+                            let page_size = height - document.views.top().headers;
+                            cursor.row_index = cursor.row_index.saturating_sub(page_size);
+                        },
+                        Skip::One => {
+                            cursor.row_index -= 1;
+                        }
                     },
-                    Direction::Down if cursor.row_index + 1 < document.views.top().rows.len() => if skip {
-                        let page_size = height - document.views.top().headers;
-                        cursor.row_index = cmp::min(cursor.row_index + page_size, document.views.top().rows.len() - 1);
-                    } else {
-                        cursor.row_index += 1;
+                    Direction::Down if cursor.row_index + 1 < document.views.top().rows.len() => match skip {
+                        Skip::All => {
+                            cursor.row_index = document.views.top().rows.len() - 1;
+                        },
+                        Skip::Many => {
+                            let page_size = height - document.views.top().headers;
+                            cursor.row_index = cmp::min(cursor.row_index + page_size, document.views.top().rows.len() - 1);
+                        },
+                        Skip::One => {
+                            cursor.row_index += 1;
+                        }
                     },
                     _ => {
                         return None;

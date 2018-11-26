@@ -12,6 +12,8 @@ Home                       Move to the beginning of the current cell or row
 End                        Move to the end of the current cell or row
 PageUp                     Move up by a single screen's worth of rows
 PageDown                   Move down by a single screen's worth of rows
+Ctrl+PageUp                Move to the first row
+Ctrl+PageDown              Move to the last row
 
 Tab                        Move right one cell, remembering the current column
 Enter                      Move down one cell, jumping to the column at which
