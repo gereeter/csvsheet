@@ -7,6 +7,7 @@ extern crate unicode_segmentation;
 extern crate unicode_width;
 extern crate terminfo;
 extern crate clap;
+extern crate tempfile;
 
 #[cfg(unix)]
 extern crate nix;
@@ -29,8 +30,6 @@ use pancurses::{Attribute, Attributes, A_NORMAL};
 use pancurses::{Input, getmouse, mousemask, mouseinterval, ALL_MOUSE_EVENTS};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-
-use std::io::{Read, Write};
 
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -210,6 +209,7 @@ impl Idx for ColId {
 
 struct Document {
     modified: bool,
+    delimiter: u8,
     // TODO: more editable data structure?
     data: IndexVec<RowId, IndexVec<ColId, ShapedString>>,
     views: RefillingStack<View>,
@@ -218,7 +218,7 @@ struct Document {
 }
 
 impl Document {
-    fn new(mut data: IndexVec<RowId, IndexVec<ColId, ShapedString>>) -> Self {
+    fn new(mut data: IndexVec<RowId, IndexVec<ColId, ShapedString>>, delimiter: u8) -> Self {
         // All documents must have at least on cell
         if data.is_empty() {
             data.push(IndexVec::new());
@@ -237,6 +237,7 @@ impl Document {
 
         Document {
             modified: false, // TODO: consider marking as true for raggedness?
+            delimiter: delimiter,
             data: data,
             views: RefillingStack::new(View {
                 headers: 1, // TODO: provide a way to customize this?
@@ -282,7 +283,20 @@ impl Document {
     }
 
     fn save_to(&mut self, path: &Path) {
-        // FIXME: actually save the file
+        // FIXME: error handling
+        let mut temp_file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+        {
+            let mut writer = csv::WriterBuilder::new().delimiter(self.delimiter)
+                                                      .from_writer(&mut temp_file);
+            for &row_id in &self.views.base().rows {
+                writer.write_record(self.views.base().cols.iter().map(|&col_id| self.data[row_id][col_id].text.as_bytes())).unwrap();
+            }
+        }
+        temp_file.as_file().sync_data().unwrap();
+        // Close the file
+        let temp_path = temp_file.into_temp_path();
+
+        temp_path.persist(path).unwrap();
         self.modified = false;
     }
 }
@@ -521,8 +535,8 @@ fn main() {
                                         .index(1))
                                     .get_matches();
 
-    let file_name_os_str = arg_matches.value_of_os("FILE").unwrap();
-    let file_name = Path::new(&file_name_os_str);
+    let file_name_arg = arg_matches.value_of_os("FILE").unwrap();
+    let file_name = std::fs::canonicalize(&file_name_arg).expect("Unable to reach file");
 
     let delimiter = arg_matches.value_of_os("delimiter").and_then(|delim_os| delim_os.to_str()).and_then(|delim_str| {
         if delim_str.len() == 1 {
@@ -545,7 +559,7 @@ fn main() {
     let reader = ReaderBuilder::new().delimiter(delimiter)
                                      .has_headers(false) // we handle this ourselves
                                      .flexible(true) // We'll fix up the file
-                                     .from_path(file_name)
+                                     .from_path(&file_name)
                                      .expect("Unable to read file");
     let mut document = Document::new(
         reader.into_records()
@@ -555,7 +569,8 @@ fn main() {
                         .map(|s| ShapedString::from_string(s.to_owned()))
                         .collect()
               })
-             .collect()
+             .collect(),
+        delimiter
     );
     let mut column_widths = IndexVec::from_vec(vec![0; document.width()]);
     for row in &document.data {
@@ -911,7 +926,7 @@ fn main() {
             },
             Some(Input::Character('\u{13}')) => { // Ctrl + S
                 // TODO: track file moves and follow the file
-                document.save_to(file_name);
+                document.save_to(&file_name);
             },
             // ------------------------------------------ Navigation ----------------------------------------------
             Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
@@ -1079,7 +1094,7 @@ fn main() {
         Mode::Quitting => match input {
                 Some(Input::Character('y')) => {
                     // TODO: track renames and follow the file
-                    document.save_to(file_name);
+                    document.save_to(&file_name);
                     break;
                 },
                 Some(Input::Character('n')) => {
