@@ -1,7 +1,7 @@
 #![feature(nll)] // TODO: consider stabilization?
 // nll is jusr convenience
 
-extern crate pancurses;
+extern crate ncurses;
 extern crate csv;
 extern crate unicode_segmentation;
 extern crate unicode_width;
@@ -14,20 +14,18 @@ extern crate nix;
 
 mod indexed_vec;
 mod stack;
+mod curses;
 //mod recurses;
 
 use indexed_vec::{Idx, IndexVec};
 use stack::RefillingStack;
+use curses::{Window, Input};
 
 use std::cmp;
 use std::iter;
 use std::path::Path;
-use std::ptr;
 
 use csv::ReaderBuilder;
-use pancurses::{initscr, cbreak, noecho, endwin, Window};
-use pancurses::{Attribute, Attributes, A_NORMAL};
-use pancurses::{Input, getmouse, mousemask, mouseinterval, ALL_MOUSE_EVENTS};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -41,6 +39,8 @@ use nix::libc::c_int;
 use nix::sys::signal::{Signal, SigAction, SigHandler, SaFlags, SigSet};
 #[cfg(unix)]
 use nix::sys::termios::{tcgetattr, tcsetattr, SetArg, IXON, cfmakeraw};
+
+use ncurses::{A_BOLD, A_NORMAL};
 
 #[derive(Clone)]
 struct ShapedString {
@@ -430,7 +430,7 @@ impl UndoState {
 }
 
 /*
-fn draw_clipped_string_ascii(window: &Window, x: usize, y: usize, left: usize, right: usize, value: &str) {
+fn draw_clipped_string_ascii(window: &mut Window, x: usize, y: usize, left: usize, right: usize, value: &str) {
     // Fast path early out
     if x >= right || x + value.len() <= left {
         return;
@@ -440,12 +440,12 @@ fn draw_clipped_string_ascii(window: &Window, x: usize, y: usize, left: usize, r
     let start_byte = left.saturating_sub(x);
     let start_col = cmp::max(x, left);
     let end_byte = cmp::min(value.len(), right - x);
-    window.mvaddstr(y as i32, (start_col - left) as i32, &value[start_byte..end_byte]);
+    window.mv_add_str(y as i32, (start_col - left) as i32, &value[start_byte..end_byte]);
 }
 */
 
 // TODO: right-to-left text?
-fn draw_clipped_string(window: &Window, x: usize, y: usize, left: usize, right: usize, value: &ShapedString) {
+fn draw_clipped_string(window: &mut Window, x: usize, y: usize, left: usize, right: usize, value: &ShapedString) {
     // Fast path early out
     if x >= right || x + value.total_width <= left {
         return;
@@ -468,17 +468,17 @@ fn draw_clipped_string(window: &Window, x: usize, y: usize, left: usize, right: 
     } else {
         value.text.len()
     };
-    window.mvaddstr(y as i32, (start_col - left) as i32, &value.text[start_byte..end_byte]);
+    window.mv_add_str(y as i32, (start_col - left) as i32, &value.text[start_byte..end_byte]);
 }
 
-fn display_row(document: &Document, row: RowId, window: &Window, y: usize, left: usize, right: usize, attributes: Attributes) {
+fn display_row(document: &Document, row: RowId, window: &mut Window, y: usize, left: usize, right: usize, attributes: ncurses::attr_t) {
     let single_sep = ShapedString::from_string(" │ ".to_owned());
     let double_sep = ShapedString::from_string(" ║ ".to_owned());
     let mut x = 0usize;
     let mut prev_col_num = None;
     for &col in &document.views.top().cols {
         if let Some(num) = prev_col_num {
-            window.attrset(A_NORMAL);
+            window.set_attrs(A_NORMAL());
             let sep = if num + 1 == document.col_numbers[col] {
                 &single_sep
             } else {
@@ -487,7 +487,7 @@ fn display_row(document: &Document, row: RowId, window: &Window, y: usize, left:
             draw_clipped_string(window, x, y, left, right, sep);
             x += 3;
         }
-        window.attrset(attributes);
+        window.set_attrs(attributes);
         draw_clipped_string(window, x, y, left, right, &document.data[row][col]);
         x += document.column_widths[col];
         prev_col_num = Some(document.col_numbers[col]);
@@ -498,18 +498,10 @@ fn get_cell<'a>(document: &'a Document, cursor: &Cursor) -> &'a ShapedString {
     &document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]]
 }
 
-struct WindowEnder;
-
-impl Drop for WindowEnder {
-    fn drop(&mut self) {
-        endwin();
-    }
-}
-
-fn debug_print(window: &Window, message: &str) {
+fn debug_print(window: &mut Window, message: &str) {
     let (height, width) = window.get_max_yx();
     let (y, x) = window.get_cur_yx();
-    window.mvaddstr(height - 1, width.saturating_sub(message.len() as i32), message);
+    window.mv_add_str(height - 1, width.saturating_sub(message.len() as i32), message);
     window.mv(y, x);
 }
 
@@ -524,10 +516,10 @@ enum Mode {
 
 fn handle_editing(input: Option<Input>, text: &mut ShapedString, position: &mut TextPosition) -> bool {
     match input {
-        Some(Input::KeyBackspace) => if !text.at_beginning(position) {
+        Some(Input::Special(ncurses::KEY_BACKSPACE)) => if !text.at_beginning(position) {
             text.delete_left(position);
         },
-        Some(Input::KeyDC) if !text.at_end(position) => {
+        Some(Input::Special(ncurses::KEY_DC)) if !text.at_end(position) => {
             text.delete_right(position);
         },
         Some(Input::Character(chr)) if !chr.is_control() => {
@@ -551,28 +543,28 @@ enum Direction {
 // FIXME: read terminfo instead of using hardcoded values
 fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
     match input {
-        Some(Input::KeyLeft) => {
+        Some(Input::Special(ncurses::KEY_LEFT)) => {
             if !text.at_beginning(position) {
                 text.move_left(position);
             } else if let Some(new_text) = navigate(Direction::Left, false) {
                 *position = TextPosition::end(new_text);
             }
         },
-        Some(Input::Unknown(249)) => { // Ctrl + Left
+        Some(Input::Special(553)) => { // Ctrl + Left
             if let Some(new_text) = navigate(Direction::Left, false) {
                 *position = TextPosition::end(new_text);
             } else {
                 *position = TextPosition::beginning();
             }
         },
-        Some(Input::KeyHome) => {
+        Some(Input::Special(ncurses::KEY_HOME)) => {
             if !text.at_beginning(position) {
                 *position = TextPosition::beginning();
             } else if let Some(_new_text) = navigate(Direction::Left, true) {
                 *position = TextPosition::beginning();
             }
         },
-        Some(Input::KeyRight) => {
+        Some(Input::Special(ncurses::KEY_RIGHT)) => {
             if !text.at_end(position) {
                 text.move_right(position);
             } else if let Some(_new_text) = navigate(Direction::Right, false) {
@@ -582,7 +574,7 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
                 return true;
             }
         },
-        Some(Input::Unknown(264)) => { // Ctrl + Right
+        Some(Input::Special(568)) => { // Ctrl + Right
             if let Some(_new_text) = navigate(Direction::Right, false) {
                 *position = TextPosition::beginning();
             } else if !text.at_end(position) {
@@ -591,7 +583,7 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
                 return true;
             }
         },
-        Some(Input::KeyEnd) => {
+        Some(Input::Special(ncurses::KEY_END)) => {
             if !text.at_end(position) {
                 *position = TextPosition::end(text);
             } else if let Some(new_text) = navigate(Direction::Right, true) {
@@ -600,22 +592,22 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
                 return true;
             }
         },
-        Some(Input::KeyUp) | Some(Input::Unknown(270)) => { // [Ctrl +] Up
+        Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(574)) => { // [Ctrl +] Up
             if let Some(new_text) = navigate(Direction::Up, false) {
                 new_text.move_vert(position);
             }
         },
-        Some(Input::KeyPPage) => { // PageUp
+        Some(Input::Special(ncurses::KEY_PPAGE)) => { // PageUp
             if let Some(new_text) = navigate(Direction::Up, true) {
                 new_text.move_vert(position);
             }
         },
-        Some(Input::KeyDown) | Some(Input::Unknown(227)) => { // [Ctrl +] Down
+        Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(531)) => { // [Ctrl +] Down
             if let Some(new_text) = navigate(Direction::Down, false) {
                 new_text.move_vert(position);
             }
         },
-        Some(Input::KeyNPage) => { // PageDown
+        Some(Input::Special(ncurses::KEY_NPAGE)) => { // PageDown
             if let Some(new_text) = navigate(Direction::Down, true) {
                 new_text.move_vert(position);
             }
@@ -733,14 +725,13 @@ fn main() {
 
 
     // TODO: check for errors!
-    let window = initscr();
-    let _defer_endwin = WindowEnder;
-    window.keypad(true);
-    cbreak();
-    noecho();
-    mousemask(ALL_MOUSE_EVENTS, ptr::null_mut());
+    let mut window = unsafe { curses::Window::init_screen() };
+    window.set_keypad(true);
+    ncurses::cbreak();
+    ncurses::noecho();
+    ncurses::mousemask(ncurses::ALL_MOUSE_EVENTS as ncurses::mmask_t, None);
     // TODO: consider behaviour around double, triple clicks
-    mouseinterval(0); // We care about up/down, not clicks
+    ncurses::mouseinterval(0); // We care about up/down, not clicks
 
     let mut width = 0;
     let mut height = 1;
@@ -760,7 +751,7 @@ fn main() {
     let mut utf8_bytes_left = 0;
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
-    window.ungetch(&Input::KeyResize);
+    ncurses::ungetch(ncurses::KEY_RESIZE);
     loop {
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
@@ -788,39 +779,33 @@ fn main() {
             window.refresh();
         }
 
-        let mut input = window.getch();
+        let mut input = window.get_ch().ok();
 
-        // Pancurses gets this very wrong, unfortunately. What pancurses calls a Character
-        // is actually just a byte, incorrectly cast to a character.
         // We need to parse utf8.
-        if let Some(Input::Character(byte_chr)) = input {
-            let byte = byte_chr as u32;
-            if byte >= 256 {
-                panic!("BUG: non-byte Character received!");
-            }
+        if let Some(Input::Byte(byte)) = input {
             if utf8_bytes_left == 0 {
                 // New character
                 if byte >> 7 == 0b0 {
                     utf8_bytes_left = 0;
-                    in_progress_codepoint = byte & 0x7f;
+                    in_progress_codepoint = (byte & 0x7f) as u32;
                 } else if byte >> 5 == 0b110 {
                     utf8_bytes_left = 1;
-                    in_progress_codepoint = byte & 0x1f;
+                    in_progress_codepoint = (byte & 0x1f) as u32;
                 } else if byte >> 4 == 0b1110 {
                     utf8_bytes_left = 2;
-                    in_progress_codepoint = byte & 0x0f;
+                    in_progress_codepoint = (byte & 0x0f) as u32;
                 } else if byte >> 3 == 0b11110 {
                     utf8_bytes_left = 3;
-                    in_progress_codepoint = byte & 0x07;
+                    in_progress_codepoint = (byte & 0x07) as u32;
                 } else {
                     // FIXME: this should not crash
                     panic!("Bad unicode: first byte {:x}", byte);
                 }
             } else {
                 utf8_bytes_left -= 1;
-                in_progress_codepoint = (in_progress_codepoint << 6) | (byte & 0x3f);
+                in_progress_codepoint = (in_progress_codepoint << 6) | ((byte & 0x3f) as u32);
             }
-            debug_print(&window, &format!("> Got byte {:x}, in progress codepoint = {:x}", byte, in_progress_codepoint));
+            debug_print(&mut window, &format!("> Got byte {:x}, in progress codepoint = {:x}", byte, in_progress_codepoint));
             if utf8_bytes_left == 0 {
                 input = Some(Input::Character(std::char::from_u32(in_progress_codepoint).expect("BUG: Bad char cast")));
             } else {
@@ -828,13 +813,13 @@ fn main() {
             }
         }
 
-        if let Some(Input::KeyResize) = input {
+        if let Some(Input::Special(ncurses::KEY_RESIZE)) = input {
             let (new_height, new_width) = window.get_max_yx();
             height = new_height as usize;
             width = new_width as usize;
             screen_x = cmp::min(screen_x, width);
             screen_y = cmp::min(screen_y, height);
-            window.clearok(true);
+            window.set_clear_ok(true);
             redraw = true;
         }
 
@@ -848,12 +833,12 @@ fn main() {
         }
 
         // Keys with modifiers (at least on xterm, utf8 mode)
-        //        Left     Up    Right     Down     Delete  Backspace
-        // None   KeyLeft  KeyUp KeyRight  KeyDown  KeyDC   KeyBackspace
-        // Shift  KeySLeft KeySR KeySRight KeySF    KeySDC  KeyBackspace
-        // Ctrl   249      270   264       227      221     \u{7f}
-        // Both   250      271   265       228      222     \u{7f}
-        // Alt    247      268   262       225      219     \u{88}
+        //        Left     Up     Right     Down     Delete  Backspace
+        // None   KEY_LEFT KEY_UP KEY_RIGHT KEY_DOWN KEY_DC  KEY_BACKSPACE
+        // Shift  KeySLeft KeySR  KeySRight KeySF    KeySDC  KEY_BACKSPACE
+        // Ctrl   553      574    568       531      525     \u{7f}
+        // Both   554      575    569       532      526     \u{7f}
+        // Alt    551      572    564       529      523     \u{88}
         let mut try_fit_x = false; // Signal that we should continue scrolling to show the whole cell without actually moving the cursor
         match mode {
             Mode::Filter { mut query, mut query_pos } => {
@@ -911,16 +896,16 @@ fn main() {
             // Undo management
             // TODO: don't duplicate the knowledge of what keys do what
             match input {
-                Some(Input::KeyDC) | Some(Input::KeyBackspace) => {
+                Some(Input::Special(ncurses::KEY_DC)) | Some(Input::Special(ncurses::KEY_BACKSPACE)) => {
                     undo_state.prepare_edit(Some(EditType::Delete), &document, &cursor);
                 },
                 Some(Input::Character(c)) if !c.is_control() => {
                     undo_state.prepare_edit(Some(EditType::Insert), &document, &cursor);
                 },
-                Some(Input::KeyLeft) | Some(Input::Unknown(249)) | Some(Input::KeyHome) |
-                Some(Input::KeyRight) | Some(Input::Unknown(264)) | Some(Input::KeyEnd) |
-                Some(Input::KeyUp) | Some(Input::KeyPPage) |
-                Some(Input::KeyDown) | Some(Input::KeyNPage) => {
+                Some(Input::Special(ncurses::KEY_LEFT)) | Some(Input::Special(553)) | Some(Input::Special(ncurses::KEY_HOME)) |
+                Some(Input::Special(ncurses::KEY_RIGHT)) | Some(Input::Special(568)) | Some(Input::Special(ncurses::KEY_END)) |
+                Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(ncurses::KEY_PPAGE)) |
+                Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(ncurses::KEY_NPAGE)) => {
                     undo_state.prepare_edit(None, &document, &cursor);
                 },
                 _ => { }
@@ -979,13 +964,13 @@ fn main() {
             });
             cursor.in_cell_pos = new_pos;
         match input {
-            Some(Input::KeyResize) => {
+            Some(Input::Special(ncurses::KEY_RESIZE)) => {
                 let (new_height, new_width) = window.get_max_yx();
                 height = new_height as usize;
                 width = new_width as usize;
                 screen_x = cmp::min(screen_x, width);
                 screen_y = cmp::min(screen_y, height);
-                window.clearok(true);
+                window.set_clear_ok(true);
                 redraw = true;
             },
             Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
@@ -1095,7 +1080,7 @@ fn main() {
                 }
             },
             // ------------------------------------------ Navigation ----------------------------------------------
-            Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
+            Some(Input::Special(551)) | Some(Input::Special(555)) => { // [Ctrl +] Alt + Left
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id]);
@@ -1107,7 +1092,7 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::Unknown(262)) | Some(Input::Unknown(266)) => { // [Ctrl +] Alt + Right
+            Some(Input::Special(566)) | Some(Input::Special(570)) => { // [Ctrl +] Alt + Right
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -1156,7 +1141,7 @@ fn main() {
                 // TODO: or jump to the beginning
                 cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
             },
-            Some(Input::Unknown(268)) | Some(Input::Unknown(272)) => { // [Ctrl +] Alt + Up
+            Some(Input::Special(572)) | Some(Input::Special(576)) => { // [Ctrl +] Alt + Up
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id]);
@@ -1167,7 +1152,7 @@ fn main() {
                 get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
-            Some(Input::Unknown(225)) | Some(Input::Unknown(229)) => { // [Ctrl +] Alt + Down
+            Some(Input::Special(529)) | Some(Input::Special(533)) => { // [Ctrl +] Alt + Down
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
@@ -1179,7 +1164,7 @@ fn main() {
                 get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
-            Some(Input::Unknown(221)) => { // Ctrl + Delete
+            Some(Input::Special(525)) => { // Ctrl + Delete
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let current_col_id = document.views.top().cols[cursor.col_index];
@@ -1232,8 +1217,8 @@ fn main() {
                 }
             },
             // ---------------------- Mouse Input ------------------------
-            Some(Input::KeyMouse) => {
-                let event = match getmouse() {
+            Some(Input::Special(ncurses::KEY_MOUSE)) => {
+                let event = match curses::get_mouse() {
                     Ok(event) => event,
                     Err(_) => {
                         // TODO: figure out scrolling, which is triggering this
@@ -1241,7 +1226,7 @@ fn main() {
                     }
                 };
                 // TODO: when are multiple bits set?
-                if event.bstate & 2 != 0 { // 2 is left button down
+                if event.bstate & ncurses::BUTTON1_PRESSED as ncurses::mmask_t != 0 {
                     undo_state.prepare_edit(None, &document, &cursor);
                     // TODO: What is the z coordinate? What is the id?
                     let hit_row = if (event.y as usize) < document.views.top().headers {
@@ -1268,7 +1253,7 @@ fn main() {
             // ------------------------------------- Fallback/Debugging ------------------------------------
             Some(input) => {
                 // TODO: just debugging, remove this
-                debug_print(&window, &format!("> {:?}", input));
+                debug_print(&mut window, &format!("> {:?}", input));
             },
             _ => { }
         } },
@@ -1340,24 +1325,24 @@ fn main() {
             window.erase();
 
             for y in 0..document.views.top().headers {
-                display_row(&document, document.views.top().rows[y], &window, y, offset_x, offset_x + width, Attributes::new() | Attribute::Bold);
+                display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, A_BOLD());
             }
 
             for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
-                display_row(&document, row, &window, row_i + document.views.top().headers, offset_x, offset_x + width, Attributes::new());
+                display_row(&document, row, &mut window, row_i + document.views.top().headers, offset_x, offset_x + width, A_NORMAL());
             }
         }
 
-        window.attrset(A_NORMAL);
+        window.set_attrs(A_NORMAL());
         window.mv(height as i32 - 1, 0);
-        window.clrtoeol();
+        window.clear_to_end_of_line();
         if let Mode::Filter { ref query, .. } = mode {
-            window.mvaddstr(height as i32 - 1, 0, "Find rows containing: ");
-            window.addstr(&query.text);
+            window.mv_add_str(height as i32 - 1, 0, "Find rows containing: ");
+            window.add_str(&query.text);
         } else if let Mode::Quitting = mode {
-            window.mvaddstr(height as i32 - 1, 0, "Save before quitting [y/n/Esc]? ");
+            window.mv_add_str(height as i32 - 1, 0, "Save before quitting [y/n/Esc]? ");
         } else if let Some(message) = warn_message {
-            window.mvaddstr(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, message);
+            window.mv_add_str(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, message);
         } else {
             // TODO(efficiency): avoid allocations
             let status = format!(
@@ -1367,7 +1352,7 @@ fn main() {
                 cursor.in_cell_pos.grapheme_index, get_cell(&document, &cursor).grapheme_info.len(),
                 input
             );
-            window.mvaddstr(height as i32 - 1, ((width.saturating_sub(status.len())) / 2) as i32, &status);
+            window.mv_add_str(height as i32 - 1, ((width.saturating_sub(status.len())) / 2) as i32, &status);
         }
 
         if let Mode::Normal = mode {

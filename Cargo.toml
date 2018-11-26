@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Jonathan S <gereeter+code@gmail.com>"]
 
 [dependencies]
-pancurses = "0.13.0"
+ncurses = "5.97.0"
 csv = "1.0.2"
 unicode-segmentation = "1.2.1"
 unicode-width = "0.1.5"
