@@ -503,7 +503,8 @@ enum Mode {
         query: ShapedString,
         query_pos: TextPosition,
     },
-    Quitting
+    Quitting,
+    Help
 }
 
 fn handle_editing(input: Option<Input>, text: &mut ShapedString, position: &mut TextPosition) -> bool {
@@ -609,6 +610,8 @@ fn handle_navigation<'a, F: FnOnce(Direction, bool) -> Option<&'a ShapedString>>
     false
 }
 
+const HELP_TEXT: &str = include_str!("help.md");
+
 fn main() {
     let arg_matches = clap::App::new("CSVSheet")
                                     .version("0.1")
@@ -700,11 +703,17 @@ fn main() {
     let mut utf8_bytes_left = 0;
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
+    let mut startup = true;
     ncurses::ungetch(ncurses::KEY_RESIZE);
     loop {
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
-        let mut warn_message: Option<Cow<'static, str>> = None;
+        let mut warn_message: Option<Cow<'static, str>> = if startup {
+            startup = false;
+            Some("Welcome to CSVsheet. Press F1 for help.".into())
+        } else {
+            None
+        };
 
         let mut input = window.get_ch().ok();
 
@@ -900,6 +909,11 @@ fn main() {
                 window.set_clear_ok(true);
                 redraw = true;
             },
+            Some(Input::Special(ncurses::KEY_F1)) => {
+                undo_state.prepare_edit(None, &document, &cursor);
+                new_mode = Mode::Help;
+                redraw = true;
+            },
             // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
             // but it would be much much better to detect the shift key.
             Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
@@ -980,6 +994,7 @@ fn main() {
                     upd_view.cols.insert(index + 1, new_col_id);
                 }
                 cursor.cell_display_column += document.column_widths[current_col_id] + 3;
+                cursor.row_index = 0;
                 cursor.col_index += 1;
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
@@ -1208,7 +1223,7 @@ fn main() {
             },
             _ => { }
         } },
-        Mode::Quitting => match input {
+            Mode::Quitting => match input {
                 Some(Input::Character('y')) => {
                     // TODO: track renames and follow the file
                     // TODO: display error to the user
@@ -1228,6 +1243,15 @@ fn main() {
                 },
                 _ => {
                     new_mode = Mode::Quitting;
+                }
+            },
+            Mode::Help => match input {
+                Some(Input::Character('\u{1b}')) => {
+                    new_mode = Mode::Normal;
+                    redraw = true;
+                },
+                _ => {
+                    new_mode = Mode::Help;
                 }
             }
         }
@@ -1278,12 +1302,16 @@ fn main() {
         if redraw {
             window.erase();
 
-            for y in 0..document.views.top().headers {
-                display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, A_BOLD());
-            }
+            if let Mode::Help = mode {
+                window.mv_add_str(0, 0, HELP_TEXT);
+            } else {
+                for y in 0..document.views.top().headers {
+                    display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, A_BOLD());
+                }
 
-            for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
-                display_row(&document, row, &mut window, row_i + document.views.top().headers, offset_x, offset_x + width, A_NORMAL());
+                for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
+                    display_row(&document, row, &mut window, row_i + document.views.top().headers, offset_x, offset_x + width, A_NORMAL());
+                }
             }
         }
 
