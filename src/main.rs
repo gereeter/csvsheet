@@ -9,9 +9,6 @@ extern crate terminfo;
 extern crate clap;
 extern crate tempfile;
 
-#[cfg(unix)]
-extern crate nix;
-
 mod indexed_vec;
 mod stack;
 mod curses;
@@ -28,17 +25,6 @@ use std::path::Path;
 use csv::ReaderBuilder;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
-#[cfg(unix)]
-use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
-#[cfg(unix)]
-use nix::libc::c_int;
-#[cfg(unix)]
-use nix::sys::signal::{Signal, SigAction, SigHandler, SaFlags, SigSet};
-#[cfg(unix)]
-use nix::sys::termios::{tcgetattr, tcsetattr, SetArg, IXON, cfmakeraw};
 
 use ncurses::{A_BOLD, A_NORMAL};
 
@@ -676,49 +662,6 @@ fn main() {
         }
     }
 
-    static CTRL_Z_COUNT: AtomicUsize = ATOMIC_USIZE_INIT;
-    static CTRL_C_COUNT: AtomicUsize = ATOMIC_USIZE_INIT;
-
-    
-    // TODO: What do we do on other platforms?
-    #[cfg(unix)] {
-        unsafe {
-            // Ctrl + Z
-            extern "C" fn handle_ctrl_z(_: c_int) { CTRL_Z_COUNT.fetch_add(1, Ordering::Relaxed); }
-            if let Err(err) = nix::sys::signal::sigaction(Signal::SIGTSTP,
-                                                          &SigAction::new(SigHandler::Handler(handle_ctrl_z),
-                                                                          SaFlags::empty(),
-                                                                          SigSet::empty())) {
-                eprintln!("WARNING: failed to disable suspension (Ctrl+Z): {:?}", err);
-            }
-            // Ctrl + C
-            extern "C" fn handle_ctrl_c(_: c_int) { CTRL_C_COUNT.fetch_add(1, Ordering::Relaxed); }
-            if let Err(err) = nix::sys::signal::sigaction(Signal::SIGINT,
-                                                          &SigAction::new(SigHandler::Handler(handle_ctrl_c),
-                                                                          SaFlags::empty(),
-                                                                          SigSet::empty())) {
-                eprintln!("WARNING: failed to disable interruption (Ctrl+C): {:?}", err);
-            }
-        }
-        // Ctrl + S, Ctrl + Q
-        let stdin_fd = std::io::stdin().as_raw_fd();
-        match tcgetattr(stdin_fd) {
-            Ok(mut attr) => {
-                /*
-                */
-//                cfmakeraw(&mut attr);
-                attr.input_flags &= !IXON;
-                if let Err(err) = tcsetattr(stdin_fd, SetArg::TCSANOW, &attr) {
-                    eprintln!("WARNING: failed to disable (set) flow control (Ctrl+S,Ctrl+Q): {:?}", err);
-                }
-            },
-            Err(err) => {
-                eprintln!("WARNING: failed to disable (get) flow control (Ctrl+S,Ctrl+Q): {:?}", err);
-            }
-        }
-    }
-    
-
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     //let mut screen = recurses::Screen::new(&stdin, &stdout);
@@ -727,7 +670,7 @@ fn main() {
     // TODO: check for errors!
     let mut window = unsafe { curses::Window::init_screen() };
     window.set_keypad(true);
-    ncurses::cbreak();
+    ncurses::raw();
     ncurses::noecho();
     ncurses::mousemask(ncurses::ALL_MOUSE_EVENTS as ncurses::mmask_t, None);
     // TODO: consider behaviour around double, triple clicks
@@ -756,28 +699,6 @@ fn main() {
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
         let mut warn_message = None;
-
-        // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
-        // but it would be much much better to detect the shift key.
-        let undo_count = CTRL_Z_COUNT.swap(0, Ordering::Relaxed);
-        if undo_count > 0 {
-            undo_state.prepare_edit(None, &document, &cursor);
-            for _ in 0..undo_count {
-                if let Some(op) = undo_state.undo_stack.pop() {
-                    let inverse_op = op.apply_to(&mut document, &mut cursor);
-                    undo_state.redo_stack.push(inverse_op);
-                    redraw = true;
-                }
-            }
-            if undo_state.is_pristine() {
-                document.modified = false;
-            }
-        }
-        let copy_count = CTRL_C_COUNT.swap(0, Ordering::Relaxed);
-        if copy_count > 0 {
-            warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]");
-            window.refresh();
-        }
 
         let mut input = window.get_ch().ok();
 
@@ -973,16 +894,36 @@ fn main() {
                 window.set_clear_ok(true);
                 redraw = true;
             },
+            // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
+            // but it would be much much better to detect the shift key.
+            Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
+                undo_state.prepare_edit(None, &document, &cursor);
+                if let Some(op) = undo_state.undo_stack.pop() {
+                    let inverse_op = op.apply_to(&mut document, &mut cursor);
+                    undo_state.redo_stack.push(inverse_op);
+                    redraw = true;
+                    if undo_state.is_pristine() {
+                        document.modified = false;
+                    }
+                } else {
+                    warn_message = Some("Nothing to undo.");
+                }
+            },
             Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.redo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
                     undo_state.undo_stack.push(inverse_op);
                     redraw = true;
+                    if undo_state.is_pristine() {
+                        document.modified = false;
+                    }
+                } else {
+                    warn_message = Some("Nothing to redo.");
                 }
-                if undo_state.is_pristine() {
-                    document.modified = false;
-                }
+            },
+            Some(Input::Character('\u{3}')) => { // Ctrl + C
+                warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]");
             },
             Some(Input::Character('\u{6}')) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
