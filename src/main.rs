@@ -975,6 +975,50 @@ fn main() {
                 get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
+            Some(Input::Unknown(221)) => { // Ctrl + Delete
+                let current_row_id = view.rows[cursor.row_index];
+                let current_col_id = view.cols[cursor.col_index];
+
+                // Delete row if empty
+                if view.rows.len() > 1 && document.data[current_row_id].iter().all(|cell| cell.text.is_empty()) {
+                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
+                        upd_view.rows.remove(index);
+                    }
+                    if cursor.row_index >= view.rows.len() {
+                        cursor.row_index -= 1;
+                        get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
+                    }
+                    let deleted_row_num = document.row_numbers[current_row_id];
+                    for row_num in &mut document.row_numbers {
+                        if *row_num > deleted_row_num {
+                            *row_num -= 1;
+                        }
+                    }
+                    redraw = true;
+                }
+
+                // Delete column if empty
+                if view.cols.len() > 0 && document.data.iter().all(|row| row[current_col_id].text.is_empty()) {
+                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
+                        upd_view.cols.remove(index);
+                    }
+                    if cursor.col_index >= view.cols.len() {
+                        cursor.col_index -= 1;
+                        cursor.cell_display_column -= column_widths[view.cols[cursor.col_index]] + 3;
+                        cursor.in_cell_pos = TextPosition::end(get_cell(&document, &view, &cursor));
+                    }
+                    let deleted_col_num = document.col_numbers[current_col_id];
+                    for col_num in &mut document.col_numbers {
+                        if *col_num > deleted_col_num {
+                            *col_num -= 1;
+                        }
+                    }
+                    
+                    redraw = true;
+                }
+            },
             // ---------------------- Mouse Input ------------------------
             Some(Input::KeyMouse) => {
                 let event = match getmouse() {
