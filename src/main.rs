@@ -764,6 +764,7 @@ fn main() {
     loop {
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
+        let mut warn_message = None;
 
         // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
         // but it would be much much better to detect the shift key.
@@ -783,7 +784,7 @@ fn main() {
         }
         let copy_count = CTRL_C_COUNT.swap(0, Ordering::Relaxed);
         if copy_count > 0 {
-            debug_print(&window, &format!("> UNIMPLEMENTED: Copied {} times!", copy_count));
+            warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]");
             window.refresh();
         }
 
@@ -1024,6 +1025,8 @@ fn main() {
                     }
                     get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                     redraw = true;
+                } else {
+                    warn_message = Some("Cannot hide the only row on the screen.");
                 }
             },
             Some(Input::Character('\u{11}')) => { // Ctrl + Q
@@ -1065,17 +1068,23 @@ fn main() {
                         cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
                     }
                     redraw = true;
+                } else {
+                    warn_message = Some("Cannot hide the only column on the screen.");
                 }
             },
             Some(Input::Character('\u{1b}')) => { // Escape
                 undo_state.prepare_edit(None, &document, &cursor);
-                let cursor_row = document.views.top().rows[cursor.row_index];
-                let cursor_col = document.views.top().cols[cursor.col_index];
-                document.views.pop();
-                cursor.row_index = document.views.top().rows.iter().position(|&row| row == cursor_row).expect("BUG: old view does not contain cursor!");
-                cursor.col_index = document.views.top().cols.iter().position(|&col| col == cursor_col).expect("BUG: old view does not contain cursor!");
-                cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| document.column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
-                redraw = true;
+                if document.views.is_at_base() {
+                    warn_message = Some("No views to pop. Press Ctrl+Q to exit.");
+                } else {
+                    let cursor_row = document.views.top().rows[cursor.row_index];
+                    let cursor_col = document.views.top().cols[cursor.col_index];
+                    document.views.pop();
+                    cursor.row_index = document.views.top().rows.iter().position(|&row| row == cursor_row).expect("BUG: old view does not contain cursor!");
+                    cursor.col_index = document.views.top().cols.iter().position(|&col| col == cursor_col).expect("BUG: old view does not contain cursor!");
+                    cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| document.column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
+                    redraw = true;
+                }
             },
             Some(Input::Character('\u{13}')) => { // Ctrl + S
                 undo_state.prepare_edit(None, &document, &cursor);
@@ -1175,6 +1184,8 @@ fn main() {
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let current_col_id = document.views.top().cols[cursor.col_index];
 
+                let mut changed = false;
+
                 // Delete row if empty
                 if document.views.top().rows.len() > 1 && document.data[current_row_id].iter().all(|cell| cell.text.is_empty()) {
                     for upd_view in document.views.iter_mut() {
@@ -1191,7 +1202,7 @@ fn main() {
                             *row_num -= 1;
                         }
                     }
-                    redraw = true;
+                    changed = true;
                 }
 
                 // Delete column if empty
@@ -1211,8 +1222,13 @@ fn main() {
                             *col_num -= 1;
                         }
                     }
-                    
+                    changed = true;
+                }
+
+                if changed {
                     redraw = true;
+                } else {
+                    warn_message = Some("Only rows/columns that are empty can be deleted.");
                 }
             },
             // ---------------------- Mouse Input ------------------------
@@ -1339,7 +1355,9 @@ fn main() {
             window.mvaddstr(height as i32 - 1, 0, "Find rows containing: ");
             window.addstr(&query.text);
         } else if let Mode::Quitting = mode {
-            window.mvaddstr(height as i32 - 1, 0, "Save before quitting [y/n]? ");
+            window.mvaddstr(height as i32 - 1, 0, "Save before quitting [y/n/Esc]? ");
+        } else if let Some(message) = warn_message {
+            window.mvaddstr(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, message);
         } else {
             // TODO(efficiency): avoid allocations
             let status = format!(
