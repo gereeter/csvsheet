@@ -282,22 +282,22 @@ impl Document {
         self.row_numbers.push(row_num)
     }
 
-    fn save_to(&mut self, path: &Path) {
-        // FIXME: error handling
-        let mut temp_file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    fn save_to(&mut self, path: &Path) -> Result<(), std::io::Error> {
+        let mut temp_file = tempfile::NamedTempFile::new_in(path.parent().ok_or(std::io::ErrorKind::Other)?)?;
         {
             let mut writer = csv::WriterBuilder::new().delimiter(self.delimiter)
                                                       .from_writer(&mut temp_file);
             for &row_id in &self.views.base().rows {
-                writer.write_record(self.views.base().cols.iter().map(|&col_id| self.data[row_id][col_id].text.as_bytes())).unwrap();
+                writer.write_record(self.views.base().cols.iter().map(|&col_id| self.data[row_id][col_id].text.as_bytes()))?;
             }
         }
-        temp_file.as_file().sync_data().unwrap();
+        temp_file.as_file().sync_data()?;
         // Close the file
         let temp_path = temp_file.into_temp_path();
 
-        temp_path.persist(path).unwrap();
+        temp_path.persist(path)?;
         self.modified = false;
+        Ok(())
     }
 }
 
@@ -926,7 +926,8 @@ fn main() {
             },
             Some(Input::Character('\u{13}')) => { // Ctrl + S
                 // TODO: track file moves and follow the file
-                document.save_to(&file_name);
+                // TODO: display error to the user
+                let _ = document.save_to(&file_name);
             },
             // ------------------------------------------ Navigation ----------------------------------------------
             Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
@@ -1094,8 +1095,10 @@ fn main() {
         Mode::Quitting => match input {
                 Some(Input::Character('y')) => {
                     // TODO: track renames and follow the file
-                    document.save_to(&file_name);
-                    break;
+                    // TODO: display error to the user
+                    if let Ok(_) = document.save_to(&file_name) {
+                        break;
+                    }
                 },
                 Some(Input::Character('n')) => {
                     break;
