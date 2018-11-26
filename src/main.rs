@@ -272,7 +272,13 @@ impl Document {
     }
 
     fn save_to(&mut self, path: &Path) -> Result<(), std::io::Error> {
-        let mut temp_file = tempfile::NamedTempFile::new_in(path.parent().ok_or(std::io::ErrorKind::Other)?)?;
+        let named_temp_file = tempfile::NamedTempFile::new_in(path.parent().ok_or(std::io::ErrorKind::Other)?)?;
+        // FIXME: There is a race condition here where the permissions might get modified in between these calls. I'm not sure how to fix that.
+        // FIXME: Copy other metadata?
+        let permissions = std::fs::metadata(path)?.permissions();
+        std::fs::set_permissions(named_temp_file.path(), permissions)?;
+        let mut temp_file = named_temp_file.reopen()?;
+        let temp_path = named_temp_file.into_temp_path();
         {
             let mut writer = csv::WriterBuilder::new().delimiter(self.delimiter)
                                                       .from_writer(&mut temp_file);
@@ -280,9 +286,8 @@ impl Document {
                 writer.write_record(self.views.base().cols.iter().map(|&col_id| self.data[row_id][col_id].text.as_bytes()))?;
             }
         }
-        temp_file.as_file().sync_data()?;
-        // Close the file
-        let temp_path = temp_file.into_temp_path();
+        temp_file.sync_data()?;
+        drop(temp_file);
 
         temp_path.persist(path)?;
         self.modified = false;
