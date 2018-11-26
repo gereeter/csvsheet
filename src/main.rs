@@ -280,6 +280,11 @@ impl Document {
         }
         self.row_numbers.push(row_num)
     }
+
+    fn save_to(&mut self, path: &Path) {
+        // FIXME: actually save the file
+        self.modified = false;
+    }
 }
 
 #[derive(Clone)]
@@ -904,6 +909,10 @@ fn main() {
                 cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
                 redraw = true;
             },
+            Some(Input::Character('\u{13}')) => { // Ctrl + S
+                // TODO: track file moves and follow the file
+                document.save_to(file_name);
+            },
             // ------------------------------------------ Navigation ----------------------------------------------
             Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
                 let current_col_id = document.views.top().cols[cursor.col_index];
@@ -1069,11 +1078,16 @@ fn main() {
         } },
         Mode::Quitting => match input {
                 Some(Input::Character('y')) => {
-                    // FIXME: SAVE!
+                    // TODO: track renames and follow the file
+                    document.save_to(file_name);
                     break;
                 },
                 Some(Input::Character('n')) => {
                     break;
+                },
+                Some(Input::Character('\u{1b}')) => { // Escape
+                    new_mode = Mode::Normal;
+                    redraw = true;
                 },
                 _ => {
                     new_mode = Mode::Quitting;
