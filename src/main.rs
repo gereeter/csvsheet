@@ -629,7 +629,7 @@ fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>
 const HELP_TEXT: &str = include_str!("help.md");
 
 fn main() {
-    let arg_matches = clap::App::new("CSVSheet")
+    let arg_matches = clap::App::new("CSVsheet")
                                     .version("0.1")
                                     .author("Jonathan S <gereeter+code@gmail.com>")
                                     .about("View and edit CSV/DSV/TSV files")
