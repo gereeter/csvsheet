@@ -12,9 +12,11 @@ extern crate clap;
 extern crate nix;
 
 mod indexed_vec;
+mod stack;
 //mod recurses;
 
 use indexed_vec::{Idx, IndexVec};
+use stack::RefillingStack;
 
 use std::cmp;
 use std::iter;
@@ -210,7 +212,7 @@ struct Document {
     modified: bool,
     // TODO: more editable data structure?
     data: IndexVec<RowId, IndexVec<ColId, ShapedString>>,
-    canonical_view: View,
+    views: RefillingStack<View>,
     row_numbers: IndexVec<RowId, usize>,
     col_numbers: IndexVec<ColId, usize>,
 }
@@ -236,12 +238,12 @@ impl Document {
         Document {
             modified: false, // TODO: consider marking as true for raggedness?
             data: data,
-            canonical_view: View {
+            views: RefillingStack::new(View {
                 headers: 1, // TODO: provide a way to customize this?
                 rows: (0..height).map(RowId).collect(),
                 cols: (0..width).map(ColId).collect(),
                 ty: ViewType::Base
-            },
+            }),
             row_numbers: (0..height).collect(),
             col_numbers: (0..width).collect()
         }
@@ -344,12 +346,12 @@ fn draw_clipped_string(window: &Window, x: usize, y: usize, left: usize, right: 
     window.mvaddstr(y as i32, (start_col - left) as i32, &value.text[start_byte..end_byte]);
 }
 
-fn display_row(document: &Document, view: &View, column_widths: &IndexVec<ColId, usize>, row: RowId, window: &Window, y: usize, left: usize, right: usize, attributes: Attributes) {
+fn display_row(document: &Document, column_widths: &IndexVec<ColId, usize>, row: RowId, window: &Window, y: usize, left: usize, right: usize, attributes: Attributes) {
     let single_sep = ShapedString::from_string(" │ ".to_owned());
     let double_sep = ShapedString::from_string(" ║ ".to_owned());
     let mut x = 0usize;
     let mut prev_col_num = None;
-    for &col in &view.cols {
+    for &col in &document.views.top().cols {
         if let Some(num) = prev_col_num {
             window.attrset(A_NORMAL);
             let sep = if num + 1 == document.col_numbers[col] {
@@ -367,8 +369,8 @@ fn display_row(document: &Document, view: &View, column_widths: &IndexVec<ColId,
     }
 }
 
-fn get_cell<'a>(document: &'a Document, view: &View, cursor: &Cursor) -> &'a ShapedString {
-    &document.data[view.rows[cursor.row_index]][view.cols[cursor.col_index]]
+fn get_cell<'a>(document: &'a Document, cursor: &Cursor) -> &'a ShapedString {
+    &document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]]
 }
 
 struct WindowEnder;
@@ -389,7 +391,6 @@ fn debug_print(window: &Window, message: &str) {
 enum Mode {
     Normal,
     Filter {
-        unfiltered_view: View,
         query: ShapedString,
         query_pos: TextPosition,
     },
@@ -551,7 +552,6 @@ fn main() {
               })
              .collect()
     );
-    let mut view = document.canonical_view.clone();
     let mut column_widths = IndexVec::from_vec(vec![0; document.width()]);
     for row in &document.data {
         for (cell, col_width) in row.iter().zip(column_widths.iter_mut()) {
@@ -634,7 +634,6 @@ fn main() {
     let mut in_progress_codepoint = 0;
     let mut utf8_bytes_left = 0;
     let mut mode = Mode::Normal;
-    let mut old_views = Vec::new();
     window.ungetch(&Input::KeyResize);
     loop {
         let undo_count = CTRL_Z_COUNT.swap(0, Ordering::Relaxed);
@@ -718,23 +717,29 @@ fn main() {
         // Alt    247      268   262       225      219     \u{88}
         let mut try_fit_x = false; // Signal that we should continue scrolling to show the whole cell without actually moving the cursor
         match mode {
-            Mode::Filter { unfiltered_view, mut query, mut query_pos } => {
+            Mode::Filter { mut query, mut query_pos } => {
                 // Editing
                 let refilter = handle_editing(input, &mut query, &mut query_pos);
                 handle_navigation(input, &query, &mut query_pos, |_, _| None);
                 if refilter {
-                    view = unfiltered_view.clone();
+                    document.views.pop();
+                    document.views.duplicate_top();
+                    document.views.top_mut().ty = ViewType::Filter;
+
                     let mut index = 0;
                     let mut good_count = 0;
                     let mut new_cursor_index = 0;
-                    let headers = view.headers;
-                    view.rows.retain(|&row| {
+                    let headers = document.views.top().headers;
+                    // TODO: better closuree captures should make this unnecessary
+                    let document_views = &mut document.views;
+                    let document_data = &mut document.data;
+                    document_views.top_mut().rows.retain(|&row| {
                         let mut good = false;
                         if index < headers {
                             good = true;
                         }
 
-                        if document.data[row].iter().any(|str| str.text.contains(&query.text)) {
+                        if document_data[row].iter().any(|str| str.text.contains(&query.text)) {
                             good = true;
                         }
 
@@ -749,62 +754,61 @@ fn main() {
                     });
                     cursor.row_index = new_cursor_index;
                     redraw = true;
-                    new_mode = Mode::Filter { unfiltered_view, query, query_pos };
+                    new_mode = Mode::Filter { query, query_pos };
                 } else if let Some(Input::Character('\u{1b}')) = input { // Escape
-                    let cursor_row = view.rows[cursor.row_index];
-                    view = unfiltered_view;
-                    cursor.row_index = view.rows.iter().position(|&row| row == cursor_row).expect("BUG: unfiltered view does not contain cursor!");
+                    let cursor_row = document.views.top().rows[cursor.row_index];
+                    document.views.pop();
+                    cursor.row_index = document.views.top().rows.iter().position(|&row| row == cursor_row).expect("BUG: unfiltered view does not contain cursor!");
                     new_mode = Mode::Normal;
                     redraw = true;
                 } else if let Some(Input::Character('\n')) = input {
-                    old_views.push(unfiltered_view);
                     new_mode = Mode::Normal;
                     redraw = true;
                 } else {
-                    new_mode = Mode::Filter { unfiltered_view, query, query_pos };
+                    new_mode = Mode::Filter { query, query_pos };
                 }
             },
         Mode::Normal => {
             // Editing
             {
-                let cell = &mut document.data[view.rows[cursor.row_index]][view.cols[cursor.col_index]];
-                let reevaluate_column_width = cell.total_width == column_widths[view.cols[cursor.col_index]];
+                let cell = &mut document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]];
+                let reevaluate_column_width = cell.total_width == column_widths[document.views.top().cols[cursor.col_index]];
                 let changed = handle_editing(input, cell, &mut cursor.in_cell_pos);
                 if changed {
                     document.modified = true;
                     redraw = true;
                     if reevaluate_column_width || cursor.in_cell_pos.display_column > cell.total_width {
-                        column_widths[view.cols[cursor.col_index]] = document.data.iter().map(|row| row[view.cols[cursor.col_index]].total_width).max().unwrap_or(0);
+                        column_widths[document.views.top().cols[cursor.col_index]] = document.data.iter().map(|row| row[document.views.top().cols[cursor.col_index]].total_width).max().unwrap_or(0);
                     }
                 }
             }
             // Navigation
             let mut new_pos = cursor.in_cell_pos;
-            try_fit_x = handle_navigation(input, get_cell(&document, &view, &cursor), &mut new_pos, |dir, skip| {
+            try_fit_x = handle_navigation(input, get_cell(&document, &cursor), &mut new_pos, |dir, skip| {
                 match dir {
                     Direction::Left if cursor.col_index > 0 => if skip {
                         cursor.col_index = 0;
                         cursor.cell_display_column = 0;
                     } else {
                         cursor.col_index -= 1;
-                        cursor.cell_display_column -= column_widths[view.cols[cursor.col_index]] + 3;
+                        cursor.cell_display_column -= column_widths[document.views.top().cols[cursor.col_index]] + 3;
                     },
-                    Direction::Right if cursor.col_index + 1 < view.cols.len() => if skip {
-                        cursor.col_index = view.cols.len() - 1;
-                        cursor.cell_display_column = view.cols[..cursor.col_index].iter().map(|&col_id| column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
+                    Direction::Right if cursor.col_index + 1 < document.views.top().cols.len() => if skip {
+                        cursor.col_index = document.views.top().cols.len() - 1;
+                        cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
                     } else {
                         cursor.col_index += 1;
-                        cursor.cell_display_column += column_widths[view.cols[cursor.col_index - 1]] + 3;
+                        cursor.cell_display_column += column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
                     },
                     Direction::Up if cursor.row_index > 0 => if skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
-                        let page_size = height - view.headers;
+                        let page_size = height - document.views.top().headers;
                         cursor.row_index = cursor.row_index.saturating_sub(page_size);
                     } else {
                         cursor.row_index -= 1;
                     },
-                    Direction::Down if cursor.row_index + 1 < view.rows.len() => if skip {
-                        let page_size = height - view.headers;
-                        cursor.row_index = cmp::min(cursor.row_index + page_size, view.rows.len() - 1);
+                    Direction::Down if cursor.row_index + 1 < document.views.top().rows.len() => if skip {
+                        let page_size = height - document.views.top().headers;
+                        cursor.row_index = cmp::min(cursor.row_index + page_size, document.views.top().rows.len() - 1);
                     } else {
                         cursor.row_index += 1;
                     },
@@ -814,7 +818,7 @@ fn main() {
                 }
                 data_entry_start_index = cursor.col_index;
                 data_entry_start_display_column = cursor.cell_display_column;
-                Some(&document.data[view.rows[cursor.row_index]][view.cols[cursor.col_index]])
+                Some(&document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]])
             });
             cursor.in_cell_pos = new_pos;
         match input {
@@ -828,28 +832,28 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Character('\u{6}')) => { // Ctrl + F
+                document.views.duplicate_top();
+                document.views.top_mut().ty = ViewType::Filter;
                 new_mode = Mode::Filter {
-                    unfiltered_view: view.clone(),
                     query: ShapedString::new(),
                     query_pos: TextPosition::beginning()
                 };
-                view.ty = ViewType::Filter;
                 redraw = true;
             },
             // TODO: better shortcut? Actually delete the line and have a way to paste it?
             // It seems mostly undefined in "standard" desktop programs (only create hyperlink, but eh, no one knows or cares about that).
             // This sort of matches the "Kill" up to end of line behavior or nano or emacs or unixy things. More like nano than emacs.
             Some(Input::Character('\u{b}')) => { // Ctrl + K
-                if view.rows.len() > 1 {
-                    if view.ty != ViewType::Hide {
-                        old_views.push(view.clone());
-                        view.ty = ViewType::Hide;
+                if document.views.top().rows.len() > 1 {
+                    if document.views.top().ty != ViewType::Hide {
+                        document.views.duplicate_top();
+                        document.views.top_mut().ty = ViewType::Hide;
                     }
-                    view.rows.remove(cursor.row_index);
-                    if cursor.row_index >= view.rows.len() {
+                    document.views.top_mut().rows.remove(cursor.row_index);
+                    if cursor.row_index >= document.views.top().rows.len() {
                         cursor.row_index -= 1;
                     }
-                    get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
+                    get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                     redraw = true;
                 }
             },
@@ -862,10 +866,10 @@ fn main() {
                 }
             },
             Some(Input::Character('\u{14}')) => { // Ctrl + T
-                    let current_col_id = view.cols[cursor.col_index];
+                    let current_col_id = document.views.top().cols[cursor.col_index];
                     let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
                     column_widths.push(0);
-                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                    for upd_view in document.views.iter_mut() {
                         let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                         upd_view.cols.insert(index + 1, new_col_id);
                     }
@@ -875,38 +879,37 @@ fn main() {
                     redraw = true;
             },
             Some(Input::Character('\u{17}')) => { // Ctrl + W
-                if view.cols.len() > 1 {
-                    if view.ty != ViewType::Hide {
-                        old_views.push(view.clone());
-                        view.ty = ViewType::Hide;
+                if document.views.top().cols.len() > 1 {
+                    if document.views.top().ty != ViewType::Hide {
+                        document.views.duplicate_top();
+                        document.views.top_mut().ty = ViewType::Hide;
                     }
-                    view.cols.remove(cursor.col_index);
-                    if cursor.col_index < view.cols.len() {
+                    document.views.top_mut().cols.remove(cursor.col_index);
+                    if cursor.col_index < document.views.top().cols.len() {
                         cursor.in_cell_pos = TextPosition::beginning();
                     } else {
                         cursor.col_index -= 1;
-                        cursor.cell_display_column -= column_widths[view.cols[cursor.col_index]] + 3;
-                        cursor.in_cell_pos = TextPosition::end(get_cell(&document, &view, &cursor));
+                        cursor.cell_display_column -= column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
                     }
                     redraw = true;
                 }
             },
             Some(Input::Character('\u{1b}')) => { // Escape
-                let old_view = old_views.pop().unwrap_or_else(|| document.canonical_view.clone());
-                let cursor_row = view.rows[cursor.row_index];
-                let cursor_col = view.cols[cursor.col_index];
-                view = old_view;
-                cursor.row_index = view.rows.iter().position(|&row| row == cursor_row).expect("BUG: old view does not contain cursor!");
-                cursor.col_index = view.cols.iter().position(|&col| col == cursor_col).expect("BUG: old view does not contain cursor!");
-                cursor.cell_display_column = view.cols.iter().take(cursor.col_index).map(|&col| column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
+                let cursor_row = document.views.top().rows[cursor.row_index];
+                let cursor_col = document.views.top().cols[cursor.col_index];
+                document.views.pop();
+                cursor.row_index = document.views.top().rows.iter().position(|&row| row == cursor_row).expect("BUG: old view does not contain cursor!");
+                cursor.col_index = document.views.top().cols.iter().position(|&col| col == cursor_col).expect("BUG: old view does not contain cursor!");
+                cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
                 redraw = true;
             },
             // ------------------------------------------ Navigation ----------------------------------------------
             Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
-                let current_col_id = view.cols[cursor.col_index];
+                let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id]);
                 column_widths.push(0);
-                for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index, new_col_id);
                 }
@@ -914,10 +917,10 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Unknown(262)) | Some(Input::Unknown(266)) => { // [Ctrl +] Alt + Right
-                let current_col_id = view.cols[cursor.col_index];
+                let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
                 column_widths.push(0);
-                for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index + 1, new_col_id);
                 }
@@ -927,27 +930,27 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Character('\t')) => {
-                if cursor.col_index + 1 == view.cols.len() {
+                let current_col_id = document.views.top().cols[cursor.col_index];
+                if cursor.col_index + 1 == document.views.top().cols.len() {
                     // TODO: is creating a new column really the right behaviour?
-                    let current_col_id = view.cols[cursor.col_index];
                     let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
                     column_widths.push(0);
-                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                    for upd_view in document.views.iter_mut() {
                         let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                         upd_view.cols.insert(index + 1, new_col_id);
                     }
                     redraw = true;
                 }
-                cursor.cell_display_column += column_widths[view.cols[cursor.col_index]] + 3;
+                cursor.cell_display_column += column_widths[current_col_id] + 3;
                 cursor.col_index += 1;
                 // TODO: or jump to the beginning?
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &view, &cursor));
+                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
             },
             Some(Input::Character('\n')) => {
-                if cursor.row_index + 1 == view.rows.len() {
-                    let current_row_id = view.rows[cursor.row_index];
+                let current_row_id = document.views.top().rows[cursor.row_index];
+                if cursor.row_index + 1 == document.views.top().rows.len() {
                     let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
-                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                    for upd_view in document.views.iter_mut() {
                         let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                         upd_view.rows.insert(index + 1, new_row_id);
                     }
@@ -957,42 +960,42 @@ fn main() {
                 cursor.col_index = data_entry_start_index;
                 cursor.cell_display_column = data_entry_start_display_column;
                 // TODO: or jump to the beginning
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &view, &cursor));
+                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
             },
             Some(Input::Unknown(268)) | Some(Input::Unknown(272)) => { // [Ctrl +] Alt + Up
-                let current_row_id = view.rows[cursor.row_index];
+                let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id]);
-                for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                for upd_view in document.views.iter_mut() {
                     let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                     upd_view.rows.insert(index, new_row_id);
                 }
-                get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
+                get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
             Some(Input::Unknown(225)) | Some(Input::Unknown(229)) => { // [Ctrl +] Alt + Down
-                let current_row_id = view.rows[cursor.row_index];
+                let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
-                for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                for upd_view in document.views.iter_mut() {
                     let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                     upd_view.rows.insert(index + 1, new_row_id);
                 }
                 cursor.row_index += 1;
-                get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
+                get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
             Some(Input::Unknown(221)) => { // Ctrl + Delete
-                let current_row_id = view.rows[cursor.row_index];
-                let current_col_id = view.cols[cursor.col_index];
+                let current_row_id = document.views.top().rows[cursor.row_index];
+                let current_col_id = document.views.top().cols[cursor.col_index];
 
                 // Delete row if empty
-                if view.rows.len() > 1 && document.data[current_row_id].iter().all(|cell| cell.text.is_empty()) {
-                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                if document.views.top().rows.len() > 1 && document.data[current_row_id].iter().all(|cell| cell.text.is_empty()) {
+                    for upd_view in document.views.iter_mut() {
                         let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                         upd_view.rows.remove(index);
                     }
-                    if cursor.row_index >= view.rows.len() {
+                    if cursor.row_index >= document.views.top().rows.len() {
                         cursor.row_index -= 1;
-                        get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
+                        get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                     }
                     let deleted_row_num = document.row_numbers[current_row_id];
                     for row_num in &mut document.row_numbers {
@@ -1004,15 +1007,15 @@ fn main() {
                 }
 
                 // Delete column if empty
-                if view.cols.len() > 0 && document.data.iter().all(|row| row[current_col_id].text.is_empty()) {
-                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                if document.views.top().cols.len() > 0 && document.data.iter().all(|row| row[current_col_id].text.is_empty()) {
+                    for upd_view in document.views.iter_mut() {
                         let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                         upd_view.cols.remove(index);
                     }
-                    if cursor.col_index >= view.cols.len() {
+                    if cursor.col_index >= document.views.top().cols.len() {
                         cursor.col_index -= 1;
-                        cursor.cell_display_column -= column_widths[view.cols[cursor.col_index]] + 3;
-                        cursor.in_cell_pos = TextPosition::end(get_cell(&document, &view, &cursor));
+                        cursor.cell_display_column -= column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        cursor.in_cell_pos = TextPosition::end(get_cell(&document,&cursor));
                     }
                     let deleted_col_num = document.col_numbers[current_col_id];
                     for col_num in &mut document.col_numbers {
@@ -1036,23 +1039,23 @@ fn main() {
                 // TODO: when are multiple bits set?
                 if event.bstate & 2 != 0 { // 2 is left button down
                     // TODO: What is the z coordinate? What is the id?
-                    let hit_row = if (event.y as usize) < view.headers {
+                    let hit_row = if (event.y as usize) < document.views.top().headers {
                         event.y as usize
                     } else {
                         event.y as usize + offset_y
                     };
                     let hit_column = event.x as usize + offset_x;
 
-                    if hit_row < view.rows.len() {
+                    if hit_row < document.views.top().rows.len() {
                         cursor.row_index = hit_row;
                         cursor.col_index = 0;
                         cursor.cell_display_column = 0;
-                        while hit_column > cursor.cell_display_column + column_widths[view.cols[cursor.col_index]] && cursor.col_index + 1 < view.cols.len() {
-                            cursor.cell_display_column += column_widths[view.cols[cursor.col_index]] + 3;
+                        while hit_column > cursor.cell_display_column + column_widths[document.views.top().cols[cursor.col_index]] && cursor.col_index + 1 < document.views.top().cols.len() {
+                            cursor.cell_display_column += column_widths[document.views.top().cols[cursor.col_index]] + 3;
                             cursor.col_index += 1;
                         }
                         cursor.in_cell_pos.display_column = hit_column.saturating_sub(cursor.cell_display_column);
-                        get_cell(&document, &view, &cursor).move_vert(&mut cursor.in_cell_pos);
+                        get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                         try_fit_x = true;
                     }
                 }
@@ -1082,7 +1085,7 @@ fn main() {
         let rows_shown = height - 1;
 
         // Scrolling
-        let target_x = cursor.cell_display_column + cmp::min(get_cell(&document, &view, &cursor).total_width, cursor.in_cell_pos.display_column);
+        let target_x = cursor.cell_display_column + cmp::min(get_cell(&document, &cursor).total_width, cursor.in_cell_pos.display_column);
         let target_y = cursor.row_index;
         if offset_x > target_x || offset_x + width <= target_x {
             // Whenever we scroll, we try to preserve the screen position, with the slight modification that getting the whole cell in
@@ -1091,20 +1094,20 @@ fn main() {
             redraw = true;
             try_fit_x = true;
         }
-        if offset_y + view.headers > target_y || offset_y + rows_shown <= target_y {
+        if offset_y + document.views.top().headers > target_y || offset_y + rows_shown <= target_y {
             offset_y = target_y.saturating_sub(screen_y);
-            if target_y >= view.headers && offset_y + view.headers > target_y {
-                offset_y = target_y - view.headers;
+            if target_y >= document.views.top().headers && offset_y + document.views.top().headers > target_y {
+                offset_y = target_y - document.views.top().headers;
             }
             redraw = true;
         }
         if try_fit_x {
             let mut cell_start = cursor.cell_display_column;
-            let mut cell_end = cell_start + column_widths[view.cols[cursor.col_index]];
+            let mut cell_end = cell_start + column_widths[document.views.top().cols[cursor.col_index]];
             if cursor.col_index > 0 {
                cell_start -= 2;
             }
-            if cursor.col_index + 1 < view.cols.len() {
+            if cursor.col_index + 1 < document.views.top().cols.len() {
                cell_end += 2;
             }
             // If we can't fit the cell, don't try and end up messing things up.
@@ -1124,12 +1127,12 @@ fn main() {
         if redraw {
             window.erase();
 
-            for y in 0..view.headers {
-                display_row(&document, &view, &column_widths, view.rows[y], &window, y, offset_x, offset_x + width, Attributes::new() | Attribute::Bold);
+            for y in 0..document.views.top().headers {
+                display_row(&document, &column_widths, document.views.top().rows[y], &window, y, offset_x, offset_x + width, Attributes::new() | Attribute::Bold);
             }
 
-            for (row_i, &row) in view.rows.iter().skip(offset_y + view.headers).take(rows_shown - view.headers).enumerate() {
-                display_row(&document, &view, &column_widths, row, &window, row_i + view.headers, offset_x, offset_x + width, Attributes::new());
+            for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
+                display_row(&document, &column_widths, row, &window, row_i + document.views.top().headers, offset_x, offset_x + width, Attributes::new());
             }
         }
 
@@ -1145,9 +1148,9 @@ fn main() {
             // TODO(efficiency): avoid allocations
             let status = format!(
                 "[ row {}/{}, col {}/{}, char {}/{}, last_input: {:?} ]",
-                document.row_numbers[view.rows[cursor.row_index]] + 1, document.height(),
-                document.col_numbers[view.cols[cursor.col_index]] + 1, document.width(),
-                cursor.in_cell_pos.grapheme_index, get_cell(&document, &view, &cursor).grapheme_info.len(),
+                document.row_numbers[document.views.top().rows[cursor.row_index]] + 1, document.height(),
+                document.col_numbers[document.views.top().cols[cursor.col_index]] + 1, document.width(),
+                cursor.in_cell_pos.grapheme_index, get_cell(&document, &cursor).grapheme_info.len(),
                 input
             );
             window.mvaddstr(height as i32 - 1, ((width.saturating_sub(status.len())) / 2) as i32, &status);
