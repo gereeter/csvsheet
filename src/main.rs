@@ -929,11 +929,13 @@ fn main() {
             Some(Input::Character('\t')) => {
                 if cursor.col_index + 1 == view.cols.len() {
                     // TODO: is creating a new column really the right behaviour?
-                    // TODO: Instead of creating at the end, create after last displayed column?
-                    // FIXME: This is totally broken. Update all views!
-                    let new_col_id = document.insert_col(document.width());
-                    view.cols.push(new_col_id);
+                    let current_col_id = view.cols[cursor.col_index];
+                    let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
                     column_widths.push(0);
+                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
+                        upd_view.cols.insert(index + 1, new_col_id);
+                    }
                     redraw = true;
                 }
                 cursor.cell_display_column += column_widths[view.cols[cursor.col_index]] + 3;
@@ -943,9 +945,12 @@ fn main() {
             },
             Some(Input::Character('\n')) => {
                 if cursor.row_index + 1 == view.rows.len() {
-                    // FIXME: This is totally broken. Update all views!
-                    let new_row_id = document.insert_row(document.height());
-                    view.rows.push(new_row_id);
+                    let current_row_id = view.rows[cursor.row_index];
+                    let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
+                    for upd_view in iter::once(&mut document.canonical_view).chain(iter::once(&mut view)).chain(old_views.iter_mut()) {
+                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
+                        upd_view.rows.insert(index + 1, new_row_id);
+                    }
                     redraw = true;
                 }
                 cursor.row_index += 1;
