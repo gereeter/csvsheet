@@ -525,12 +525,21 @@ fn handle_editing(input: Option<Input>, text: &mut ShapedString, position: &mut 
     true
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 enum Direction {
     Left,
     Right,
     Up,
     Down
+}
+
+impl Direction {
+    fn is_horizontal(self) -> bool {
+        match self {
+            Direction::Left | Direction::Right => true,
+            Direction::Up | Direction::Down => false
+        }
+    }
 }
 
 enum Skip {
@@ -541,89 +550,60 @@ enum Skip {
 
 // FIXME: read terminfo instead of using hardcoded values
 fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
-    match input {
-        Some(Input::Special(ncurses::KEY_LEFT)) => {
-            if !text.at_beginning(position) {
-                text.move_left(position);
-            } else if let Some(new_text) = navigate(Direction::Left, Skip::One) {
-                *position = TextPosition::end(new_text);
-            }
+    // Parse the keystroke into its meaning. If we can do the action within the cell, do it and immediately return.
+    let (direction, skip) = match input {
+        Some(Input::Special(ncurses::KEY_LEFT)) if !text.at_beginning(position) => {
+            text.move_left(position);
+            return false;
         },
-        Some(Input::Special(553)) => { // Ctrl + Left
-            if let Some(new_text) = navigate(Direction::Left, Skip::One) {
-                *position = TextPosition::end(new_text);
-            } else {
-                *position = TextPosition::beginning();
-            }
+        Some(Input::Special(ncurses::KEY_HOME)) if !text.at_beginning(position) => {
+            *position = TextPosition::beginning();
+            return false;
         },
-        Some(Input::Special(ncurses::KEY_HOME)) => {
-            if !text.at_beginning(position) {
-                *position = TextPosition::beginning();
-            } else if let Some(_new_text) = navigate(Direction::Left, Skip::All) {
-                *position = TextPosition::beginning();
-            }
+        Some(Input::Special(ncurses::KEY_LEFT)) | Some(Input::Special(553)) => (Direction::Left, Skip::One), // Ctrl + Left
+        Some(Input::Special(ncurses::KEY_HOME))                             => (Direction::Left, Skip::All),
+
+        Some(Input::Special(ncurses::KEY_RIGHT)) if !text.at_end(position) => {
+            text.move_right(position);
+            return false;
         },
-        Some(Input::Special(ncurses::KEY_RIGHT)) => {
-            if !text.at_end(position) {
-                text.move_right(position);
-            } else if let Some(_new_text) = navigate(Direction::Right, Skip::One) {
-                *position = TextPosition::beginning();
-            } else {
-                // TODO: what if the last cell doesn't fit on the screen?
-                return true;
-            }
+        Some(Input::Special(ncurses::KEY_END)) if !text.at_end(position) => {
+            *position = TextPosition::end(text);
+            return false;
         },
-        Some(Input::Special(568)) => { // Ctrl + Right
-            if let Some(_new_text) = navigate(Direction::Right, Skip::One) {
-                *position = TextPosition::beginning();
-            } else if !text.at_end(position) {
-                *position = TextPosition::end(text);
-            } else {
-                return true;
-            }
-        },
-        Some(Input::Special(ncurses::KEY_END)) => {
-            if !text.at_end(position) {
-                *position = TextPosition::end(text);
-            } else if let Some(new_text) = navigate(Direction::Right, Skip::All) {
-                *position = TextPosition::end(new_text);
-            } else {
-                return true;
-            }
-        },
-        Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(574)) => { // [Ctrl +] Up
-            if let Some(new_text) = navigate(Direction::Up, Skip::One) {
-                new_text.move_vert(position);
-            }
-        },
-        Some(Input::Special(ncurses::KEY_PPAGE)) => { // PageUp
-            if let Some(new_text) = navigate(Direction::Up, Skip::Many) {
-                new_text.move_vert(position);
-            }
-        },
-        Some(Input::Special(563)) => { // Ctrl + PageUp
-            if let Some(new_text) = navigate(Direction::Up, Skip::All) {
-                new_text.move_vert(position);
-            }
-        },
-        Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(531)) => { // [Ctrl +] Down
-            if let Some(new_text) = navigate(Direction::Down, Skip::One) {
-                new_text.move_vert(position);
-            }
-        },
-        Some(Input::Special(ncurses::KEY_NPAGE)) => { // PageDown
-            if let Some(new_text) = navigate(Direction::Down, Skip::Many) {
-                new_text.move_vert(position);
-            }
-        },
-        Some(Input::Special(558)) => { // Ctrl + PageDown
-            if let Some(new_text) = navigate(Direction::Down, Skip::All) {
-                new_text.move_vert(position);
-            }
-        },
-        _ => { }
+        Some(Input::Special(ncurses::KEY_RIGHT)) | Some(Input::Special(568)) => (Direction::Right, Skip::One), // [Ctrl +] Right
+        Some(Input::Special(ncurses::KEY_END))                               => (Direction::Right, Skip::All),
+
+        Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(574)) => (Direction::Up, Skip::One), // [Ctrl +] Up
+        Some(Input::Special(ncurses::KEY_PPAGE))                          => (Direction::Up, Skip::Many), // PageUp
+        Some(Input::Special(563))                                         => (Direction::Up, Skip::All), // Ctrl + PageUp
+
+        Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(531)) => (Direction::Down, Skip::One), // [Ctrl +] Down
+        Some(Input::Special(ncurses::KEY_NPAGE))                            => (Direction::Down, Skip::Many), // PageDown
+        Some(Input::Special(558))                                           => (Direction::Down, Skip::All), // Ctrl + PageDown
+
+        _ => {
+            return false
+        }
+    };
+
+    // Try to move cells
+    if let Some(new_text) = navigate(direction, skip) {
+        match direction {
+            Direction::Up | Direction::Down => new_text.move_vert(position),
+            Direction::Left => *position = TextPosition::end(new_text),
+            Direction::Right => *position = TextPosition::beginning()
+        }
+        false
+    } else {
+        // If we failed, go as far as we can within the cell
+        match direction {
+            Direction::Up | Direction::Down => { },
+            Direction::Left => *position = TextPosition::beginning(),
+            Direction::Right => *position = TextPosition::end(text)
+        }
+        direction.is_horizontal()
     }
-    false
 }
 
 const HELP_TEXT: &str = include_str!("help.md");
