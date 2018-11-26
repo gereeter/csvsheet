@@ -337,6 +337,7 @@ enum UndoOp {
 
 impl UndoOp {
     fn apply_to(self, document: &mut Document, cursor: &mut Cursor) -> UndoOp {
+        document.modified = true;
         match self {
             UndoOp::Edit { row_id, col_id, before_in_cell_pos, after_in_cell_pos, before_text } => {
                 let after_text = std::mem::replace(&mut document.data[row_id][col_id], before_text);
@@ -380,7 +381,8 @@ enum EditType {
 struct UndoState {
     undo_stack: Vec<UndoOp>,
     redo_stack: Vec<UndoOp>,
-    current_edit_type: Option<EditType>
+    current_edit_type: Option<EditType>,
+    pristine_state: Option<usize>
 }
 
 impl UndoState {
@@ -388,13 +390,23 @@ impl UndoState {
         UndoState {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            current_edit_type: None
+            current_edit_type: None,
+            pristine_state: Some(0)
         }
+    }
+
+    fn is_pristine(&self) -> bool {
+        self.pristine_state == Some(self.undo_stack.len())
     }
 
     fn prepare_edit(&mut self, edit_type: Option<EditType>, document: &Document, cursor: &Cursor) {
         if edit_type.is_some() {
             self.redo_stack.clear();
+            if let Some(height) = self.pristine_state {
+                if height > self.undo_stack.len() {
+                    self.pristine_state = None;
+                }
+            }
         }
 
         if edit_type != self.current_edit_type {
@@ -765,6 +777,9 @@ fn main() {
                     redraw = true;
                 }
             }
+            if undo_state.is_pristine() {
+                document.modified = false;
+            }
         }
         let copy_count = CTRL_C_COUNT.swap(0, Ordering::Relaxed);
         if copy_count > 0 {
@@ -979,6 +994,9 @@ fn main() {
                     undo_state.undo_stack.push(inverse_op);
                     redraw = true;
                 }
+                if undo_state.is_pristine() {
+                    document.modified = false;
+                }
             },
             Some(Input::Character('\u{6}')) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
@@ -1063,7 +1081,9 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
                 // TODO: display error to the user
-                let _ = document.save_to(&file_name);
+                if let Ok(_) = document.save_to(&file_name) {
+                    undo_state.pristine_state = Some(undo_state.undo_stack.len());
+                }
             },
             // ------------------------------------------ Navigation ----------------------------------------------
             Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
