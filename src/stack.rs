@@ -15,6 +15,10 @@ impl<T: Clone> RefillingStack<T> {
         &self.base
     }
 
+    pub fn is_at_base(&self) -> bool {
+        self.variants.is_empty()
+    }
+
     pub fn top(&self) -> &T {
         self.variants.last().unwrap_or(&self.base)
     }

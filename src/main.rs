@@ -215,6 +215,7 @@ struct Document {
     views: RefillingStack<View>,
     row_numbers: IndexVec<RowId, usize>,
     col_numbers: IndexVec<ColId, usize>,
+    column_widths: IndexVec<ColId, usize>,
 }
 
 impl Document {
@@ -246,7 +247,8 @@ impl Document {
                 ty: ViewType::Base
             }),
             row_numbers: (0..height).collect(),
-            col_numbers: (0..width).collect()
+            col_numbers: (0..width).collect(),
+            column_widths: IndexVec::from_vec(vec![0; width])
         }
     }
 
@@ -323,6 +325,94 @@ struct Cursor {
     in_cell_pos: TextPosition
 }
 
+enum UndoOp {
+    Edit {
+        row_id: RowId,
+        col_id: ColId,
+        before_in_cell_pos: TextPosition,
+        after_in_cell_pos: TextPosition,
+        before_text: ShapedString
+    }
+}
+
+impl UndoOp {
+    fn apply_to(self, document: &mut Document, cursor: &mut Cursor) -> UndoOp {
+        match self {
+            UndoOp::Edit { row_id, col_id, before_in_cell_pos, after_in_cell_pos, before_text } => {
+                let after_text = std::mem::replace(&mut document.data[row_id][col_id], before_text);
+
+                // TODO: Is popping views until we find the cell the correct behavior here?
+                let (row_index, col_index) = loop {
+                    let maybe_row_idx = document.views.top().rows.iter().position(|&cand_row_id| cand_row_id == row_id);
+                    let maybe_col_idx = document.views.top().cols.iter().position(|&cand_col_id| cand_col_id == col_id);
+                    if let (Some(row_idx), Some(col_idx)) = (maybe_row_idx, maybe_col_idx) {
+                        break (row_idx, col_idx);
+                    } else {
+                        assert!(!document.views.is_at_base());
+                        document.views.pop();
+                    }
+                };
+                *cursor = Cursor {
+                    row_index: row_index,
+                    col_index: col_index,
+                    cell_display_column: document.views.top().cols[..col_index].iter().map(|&pre_col_id| document.column_widths[pre_col_id] + 3).sum(),
+                    in_cell_pos: before_in_cell_pos
+                };
+
+                UndoOp::Edit {
+                    row_id: row_id,
+                    col_id: col_id,
+                    before_in_cell_pos: after_in_cell_pos,
+                    after_in_cell_pos: before_in_cell_pos,
+                    before_text: after_text
+                }
+            },
+        }
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum EditType {
+    Insert,
+    Delete
+}
+
+struct UndoState {
+    undo_stack: Vec<UndoOp>,
+    redo_stack: Vec<UndoOp>,
+    current_edit_type: Option<EditType>
+}
+
+impl UndoState {
+    fn new() -> UndoState {
+        UndoState {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            current_edit_type: None
+        }
+    }
+
+    fn prepare_edit(&mut self, edit_type: Option<EditType>, document: &Document, cursor: &Cursor) {
+        if edit_type != self.current_edit_type {
+            self.current_edit_type = edit_type;
+            if let Some(&mut UndoOp::Edit { ref mut after_in_cell_pos, .. }) = self.undo_stack.last_mut() {
+                *after_in_cell_pos = cursor.in_cell_pos;
+            }
+            if edit_type.is_some() {
+                let row_id = document.views.top().rows[cursor.row_index];
+                let col_id = document.views.top().cols[cursor.col_index];
+                self.undo_stack.push(UndoOp::Edit {
+                    row_id: row_id,
+                    col_id: col_id,
+                    before_in_cell_pos: cursor.in_cell_pos,
+                    after_in_cell_pos: cursor.in_cell_pos,
+                    before_text: document.data[row_id][col_id].clone()
+                });
+            }
+        }
+    }
+}
+
 /*
 fn draw_clipped_string_ascii(window: &Window, x: usize, y: usize, left: usize, right: usize, value: &str) {
     // Fast path early out
@@ -365,7 +455,7 @@ fn draw_clipped_string(window: &Window, x: usize, y: usize, left: usize, right: 
     window.mvaddstr(y as i32, (start_col - left) as i32, &value.text[start_byte..end_byte]);
 }
 
-fn display_row(document: &Document, column_widths: &IndexVec<ColId, usize>, row: RowId, window: &Window, y: usize, left: usize, right: usize, attributes: Attributes) {
+fn display_row(document: &Document, row: RowId, window: &Window, y: usize, left: usize, right: usize, attributes: Attributes) {
     let single_sep = ShapedString::from_string(" │ ".to_owned());
     let double_sep = ShapedString::from_string(" ║ ".to_owned());
     let mut x = 0usize;
@@ -383,7 +473,7 @@ fn display_row(document: &Document, column_widths: &IndexVec<ColId, usize>, row:
         }
         window.attrset(attributes);
         draw_clipped_string(window, x, y, left, right, &document.data[row][col]);
-        x += column_widths[col];
+        x += document.column_widths[col];
         prev_col_num = Some(document.col_numbers[col]);
     }
 }
@@ -572,9 +662,8 @@ fn main() {
              .collect(),
         delimiter
     );
-    let mut column_widths = IndexVec::from_vec(vec![0; document.width()]);
     for row in &document.data {
-        for (cell, col_width) in row.iter().zip(column_widths.iter_mut()) {
+        for (cell, col_width) in row.iter().zip(document.column_widths.iter_mut()) {
             *col_width = cmp::max(*col_width, cell.total_width);
         }
     }
@@ -654,12 +743,22 @@ fn main() {
     let mut in_progress_codepoint = 0;
     let mut utf8_bytes_left = 0;
     let mut mode = Mode::Normal;
+    let mut undo_state = UndoState::new();
     window.ungetch(&Input::KeyResize);
     loop {
+        let mut redraw = false;
+        let mut new_mode = Mode::Normal;
+
         let undo_count = CTRL_Z_COUNT.swap(0, Ordering::Relaxed);
         if undo_count > 0 {
-            debug_print(&window, &format!("> UNIMPLEMENTED: Undid {} actions!", undo_count));
-            window.refresh();
+            undo_state.prepare_edit(None, &document, &cursor);
+            for _ in 0..undo_count {
+                if let Some(op) = undo_state.undo_stack.pop() {
+                    let inverse_op = op.apply_to(&mut document, &mut cursor);
+                    undo_state.redo_stack.push(inverse_op);
+                    redraw = true;
+                }
+            }
         }
         let copy_count = CTRL_C_COUNT.swap(0, Ordering::Relaxed);
         if copy_count > 0 {
@@ -668,8 +767,6 @@ fn main() {
         }
 
         let mut input = window.getch();
-        let mut redraw = false;
-        let mut new_mode = Mode::Normal;
 
         // Pancurses gets this very wrong, unfortunately. What pancurses calls a Character
         // is actually just a byte, incorrectly cast to a character.
@@ -789,16 +886,34 @@ fn main() {
                 }
             },
         Mode::Normal => {
+            // Undo management
+            // TODO: don't duplicate the knowledge of what keys do what
+            match input {
+                Some(Input::KeyDC) | Some(Input::KeyBackspace) => {
+                    undo_state.prepare_edit(Some(EditType::Delete), &document, &cursor);
+                },
+                Some(Input::Character(c)) if !c.is_control() => {
+                    undo_state.prepare_edit(Some(EditType::Insert), &document, &cursor);
+                },
+                Some(Input::KeyLeft) | Some(Input::Unknown(249)) | Some(Input::KeyHome) |
+                Some(Input::KeyRight) | Some(Input::Unknown(264)) | Some(Input::KeyEnd) |
+                Some(Input::KeyUp) | Some(Input::KeyPPage) |
+                Some(Input::KeyDown) | Some(Input::KeyNPage) => {
+                    undo_state.prepare_edit(None, &document, &cursor);
+                },
+                _ => { }
+            }
+
             // Editing
             {
                 let cell = &mut document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]];
-                let reevaluate_column_width = cell.total_width == column_widths[document.views.top().cols[cursor.col_index]];
+                let reevaluate_column_width = cell.total_width == document.column_widths[document.views.top().cols[cursor.col_index]];
                 let changed = handle_editing(input, cell, &mut cursor.in_cell_pos);
                 if changed {
                     document.modified = true;
                     redraw = true;
                     if reevaluate_column_width || cursor.in_cell_pos.display_column > cell.total_width {
-                        column_widths[document.views.top().cols[cursor.col_index]] = document.data.iter().map(|row| row[document.views.top().cols[cursor.col_index]].total_width).max().unwrap_or(0);
+                        document.column_widths[document.views.top().cols[cursor.col_index]] = document.data.iter().map(|row| row[document.views.top().cols[cursor.col_index]].total_width).max().unwrap_or(0);
                     }
                 }
             }
@@ -811,14 +926,14 @@ fn main() {
                         cursor.cell_display_column = 0;
                     } else {
                         cursor.col_index -= 1;
-                        cursor.cell_display_column -= column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                     },
                     Direction::Right if cursor.col_index + 1 < document.views.top().cols.len() => if skip {
                         cursor.col_index = document.views.top().cols.len() - 1;
-                        cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
+                        cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
                     } else {
                         cursor.col_index += 1;
-                        cursor.cell_display_column += column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
+                        cursor.cell_display_column += document.column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
                     },
                     Direction::Up if cursor.row_index > 0 => if skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
                         let page_size = height - document.views.top().headers;
@@ -852,6 +967,7 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Character('\u{6}')) => { // Ctrl + F
+                undo_state.prepare_edit(None, &document, &cursor);
                 document.views.duplicate_top();
                 document.views.top_mut().ty = ViewType::Filter;
                 new_mode = Mode::Filter {
@@ -864,6 +980,7 @@ fn main() {
             // It seems mostly undefined in "standard" desktop programs (only create hyperlink, but eh, no one knows or cares about that).
             // This sort of matches the "Kill" up to end of line behavior or nano or emacs or unixy things. More like nano than emacs.
             Some(Input::Character('\u{b}')) => { // Ctrl + K
+                undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     if document.views.top().ty != ViewType::Hide {
                         document.views.duplicate_top();
@@ -878,6 +995,7 @@ fn main() {
                 }
             },
             Some(Input::Character('\u{11}')) => { // Ctrl + Q
+                undo_state.prepare_edit(None, &document, &cursor);
                 if document.modified {
                     new_mode = Mode::Quitting;
                     redraw = true;
@@ -886,20 +1004,22 @@ fn main() {
                 }
             },
             Some(Input::Character('\u{14}')) => { // Ctrl + T
-                    let current_col_id = document.views.top().cols[cursor.col_index];
-                    let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                    column_widths.push(0);
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
-                        upd_view.cols.insert(index + 1, new_col_id);
-                    }
-                    cursor.cell_display_column += column_widths[current_col_id] + 3;
-                    cursor.col_index += 1;
-                    cursor.in_cell_pos = TextPosition::beginning();
-                    redraw = true;
+                undo_state.prepare_edit(None, &document, &cursor);
+                let current_col_id = document.views.top().cols[cursor.col_index];
+                let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
+                document.column_widths.push(0);
+                for upd_view in document.views.iter_mut() {
+                    let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
+                    upd_view.cols.insert(index + 1, new_col_id);
+                }
+                cursor.cell_display_column += document.column_widths[current_col_id] + 3;
+                cursor.col_index += 1;
+                cursor.in_cell_pos = TextPosition::beginning();
+                redraw = true;
             },
             Some(Input::Character('\u{17}')) => { // Ctrl + W
                 if document.views.top().cols.len() > 1 {
+                    undo_state.prepare_edit(None, &document, &cursor);
                     if document.views.top().ty != ViewType::Hide {
                         document.views.duplicate_top();
                         document.views.top_mut().ty = ViewType::Hide;
@@ -909,31 +1029,34 @@ fn main() {
                         cursor.in_cell_pos = TextPosition::beginning();
                     } else {
                         cursor.col_index -= 1;
-                        cursor.cell_display_column -= column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                         cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
                     }
                     redraw = true;
                 }
             },
             Some(Input::Character('\u{1b}')) => { // Escape
+                undo_state.prepare_edit(None, &document, &cursor);
                 let cursor_row = document.views.top().rows[cursor.row_index];
                 let cursor_col = document.views.top().cols[cursor.col_index];
                 document.views.pop();
                 cursor.row_index = document.views.top().rows.iter().position(|&row| row == cursor_row).expect("BUG: old view does not contain cursor!");
                 cursor.col_index = document.views.top().cols.iter().position(|&col| col == cursor_col).expect("BUG: old view does not contain cursor!");
-                cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
+                cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| document.column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
                 redraw = true;
             },
             Some(Input::Character('\u{13}')) => { // Ctrl + S
+                undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
                 // TODO: display error to the user
                 let _ = document.save_to(&file_name);
             },
             // ------------------------------------------ Navigation ----------------------------------------------
             Some(Input::Unknown(247)) | Some(Input::Unknown(251)) => { // [Ctrl +] Alt + Left
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id]);
-                column_widths.push(0);
+                document.column_widths.push(0);
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index, new_col_id);
@@ -942,36 +1065,39 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Unknown(262)) | Some(Input::Unknown(266)) => { // [Ctrl +] Alt + Right
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                column_widths.push(0);
+                document.column_widths.push(0);
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index + 1, new_col_id);
                 }
-                cursor.cell_display_column += column_widths[current_col_id] + 3;
+                cursor.cell_display_column += document.column_widths[current_col_id] + 3;
                 cursor.col_index += 1;
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
             Some(Input::Character('\t')) => {
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 if cursor.col_index + 1 == document.views.top().cols.len() {
                     // TODO: is creating a new column really the right behaviour?
                     let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                    column_widths.push(0);
+                    document.column_widths.push(0);
                     for upd_view in document.views.iter_mut() {
                         let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                         upd_view.cols.insert(index + 1, new_col_id);
                     }
                     redraw = true;
                 }
-                cursor.cell_display_column += column_widths[current_col_id] + 3;
+                cursor.cell_display_column += document.column_widths[current_col_id] + 3;
                 cursor.col_index += 1;
                 // TODO: or jump to the beginning?
                 cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
             },
             Some(Input::Character('\n')) => {
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 if cursor.row_index + 1 == document.views.top().rows.len() {
                     let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
@@ -988,6 +1114,7 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
             },
             Some(Input::Unknown(268)) | Some(Input::Unknown(272)) => { // [Ctrl +] Alt + Up
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id]);
                 for upd_view in document.views.iter_mut() {
@@ -998,6 +1125,7 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Unknown(225)) | Some(Input::Unknown(229)) => { // [Ctrl +] Alt + Down
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
                 for upd_view in document.views.iter_mut() {
@@ -1009,6 +1137,7 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Unknown(221)) => { // Ctrl + Delete
+                undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let current_col_id = document.views.top().cols[cursor.col_index];
 
@@ -1039,7 +1168,7 @@ fn main() {
                     }
                     if cursor.col_index >= document.views.top().cols.len() {
                         cursor.col_index -= 1;
-                        cursor.cell_display_column -= column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                         cursor.in_cell_pos = TextPosition::end(get_cell(&document,&cursor));
                     }
                     let deleted_col_num = document.col_numbers[current_col_id];
@@ -1063,6 +1192,7 @@ fn main() {
                 };
                 // TODO: when are multiple bits set?
                 if event.bstate & 2 != 0 { // 2 is left button down
+                    undo_state.prepare_edit(None, &document, &cursor);
                     // TODO: What is the z coordinate? What is the id?
                     let hit_row = if (event.y as usize) < document.views.top().headers {
                         event.y as usize
@@ -1075,8 +1205,8 @@ fn main() {
                         cursor.row_index = hit_row;
                         cursor.col_index = 0;
                         cursor.cell_display_column = 0;
-                        while hit_column > cursor.cell_display_column + column_widths[document.views.top().cols[cursor.col_index]] && cursor.col_index + 1 < document.views.top().cols.len() {
-                            cursor.cell_display_column += column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        while hit_column > cursor.cell_display_column + document.column_widths[document.views.top().cols[cursor.col_index]] && cursor.col_index + 1 < document.views.top().cols.len() {
+                            cursor.cell_display_column += document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                             cursor.col_index += 1;
                         }
                         cursor.in_cell_pos.display_column = hit_column.saturating_sub(cursor.cell_display_column);
@@ -1135,7 +1265,7 @@ fn main() {
         }
         if try_fit_x {
             let mut cell_start = cursor.cell_display_column;
-            let mut cell_end = cell_start + column_widths[document.views.top().cols[cursor.col_index]];
+            let mut cell_end = cell_start + document.column_widths[document.views.top().cols[cursor.col_index]];
             if cursor.col_index > 0 {
                cell_start -= 2;
             }
@@ -1160,11 +1290,11 @@ fn main() {
             window.erase();
 
             for y in 0..document.views.top().headers {
-                display_row(&document, &column_widths, document.views.top().rows[y], &window, y, offset_x, offset_x + width, Attributes::new() | Attribute::Bold);
+                display_row(&document, document.views.top().rows[y], &window, y, offset_x, offset_x + width, Attributes::new() | Attribute::Bold);
             }
 
             for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
-                display_row(&document, &column_widths, row, &window, row_i + document.views.top().headers, offset_x, offset_x + width, Attributes::new());
+                display_row(&document, row, &window, row_i + document.views.top().headers, offset_x, offset_x + width, Attributes::new());
             }
         }
 
