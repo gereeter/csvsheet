@@ -393,6 +393,10 @@ impl UndoState {
     }
 
     fn prepare_edit(&mut self, edit_type: Option<EditType>, document: &Document, cursor: &Cursor) {
+        if edit_type.is_some() {
+            self.redo_stack.clear();
+        }
+
         if edit_type != self.current_edit_type {
             self.current_edit_type = edit_type;
             if let Some(&mut UndoOp::Edit { ref mut after_in_cell_pos, .. }) = self.undo_stack.last_mut() {
@@ -749,6 +753,8 @@ fn main() {
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
 
+        // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
+        // but it would be much much better to detect the shift key.
         let undo_count = CTRL_Z_COUNT.swap(0, Ordering::Relaxed);
         if undo_count > 0 {
             undo_state.prepare_edit(None, &document, &cursor);
@@ -965,6 +971,14 @@ fn main() {
                 screen_y = cmp::min(screen_y, height);
                 window.clearok(true);
                 redraw = true;
+            },
+            Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
+                undo_state.prepare_edit(None, &document, &cursor);
+                if let Some(op) = undo_state.redo_stack.pop() {
+                    let inverse_op = op.apply_to(&mut document, &mut cursor);
+                    undo_state.undo_stack.push(inverse_op);
+                    redraw = true;
+                }
             },
             Some(Input::Character('\u{6}')) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
