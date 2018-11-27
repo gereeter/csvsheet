@@ -576,11 +576,11 @@ fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>
 
         Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(574)) => (Direction::Up, Skip::One), // [Ctrl +] Up
         Some(Input::Special(ncurses::KEY_PPAGE))                          => (Direction::Up, Skip::Many), // PageUp
-        Some(Input::Special(563))                                         => (Direction::Up, Skip::All), // Ctrl + PageUp
+        Some(Input::Special(542))                                         => (Direction::Up, Skip::All), // Ctrl + Home
 
         Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(531)) => (Direction::Down, Skip::One), // [Ctrl +] Down
         Some(Input::Special(ncurses::KEY_NPAGE))                            => (Direction::Down, Skip::Many), // PageDown
-        Some(Input::Special(558))                                           => (Direction::Down, Skip::All), // Ctrl + PageDown
+        Some(Input::Special(536))                                           => (Direction::Down, Skip::All), // Ctrl + End
 
         _ => {
             return false
@@ -836,8 +836,8 @@ fn main() {
                 },
                 Some(Input::Special(ncurses::KEY_LEFT)) | Some(Input::Special(553)) | Some(Input::Special(ncurses::KEY_HOME)) |
                 Some(Input::Special(ncurses::KEY_RIGHT)) | Some(Input::Special(568)) | Some(Input::Special(ncurses::KEY_END)) |
-                Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(ncurses::KEY_PPAGE)) |
-                Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(ncurses::KEY_NPAGE)) => {
+                Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(ncurses::KEY_PPAGE)) | Some(Input::Special(542)) |
+                Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(ncurses::KEY_NPAGE)) | Some(Input::Special(536)) => {
                     undo_state.prepare_edit(None, &document, &cursor);
                 },
                 _ => { }
