@@ -677,6 +677,12 @@ fn main() {
     // TODO: consider behaviour around double, triple clicks
     ncurses::mouseinterval(0); // We care about up/down, not clicks
 
+    // We use Esc heavily and modern computers are quite fast, so unless the user has overridden it directly,
+    // set ESCDELAY to a small 25ms. The normal default of 1 second is too high.
+    if std::env::var_os("ESCDELAY").is_none() {
+        ncurses::set_escdelay(25);
+    }
+
     // Hackily detect if our terminal is using XTerm-style codes and add the rest if necessary
     if curses::key_code_for(const_cstr!("\x1b[1;2D").as_cstr()) == Ok(ncurses::KEY_SLEFT) &&
        curses::key_code_for(const_cstr!("\x1b[1;2C").as_cstr()) == Ok(ncurses::KEY_SRIGHT) {
