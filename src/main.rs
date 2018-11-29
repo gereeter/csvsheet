@@ -1043,6 +1043,32 @@ fn main() {
                     warn_message = Some("Cannot hide the only row on the screen.".into());
                 }
             },
+            Some(Input::Character('\u{8b}')) => { // Ctrl + Alt + K
+                undo_state.prepare_edit(None, &document, &cursor);
+                if document.views.top().rows.len() > 1 {
+                    let current_row_id = document.views.top().rows[cursor.row_index];
+
+                    for upd_view in document.views.iter_mut() {
+                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
+                        upd_view.rows.remove(index);
+                    }
+                    if cursor.row_index >= document.views.top().rows.len() {
+                        cursor.row_index -= 1;
+                        get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
+                    }
+                    let deleted_row_num = document.row_numbers[current_row_id];
+                    for row_num in &mut document.row_numbers {
+                        if *row_num > deleted_row_num {
+                            *row_num -= 1;
+                        }
+                    }
+
+                    redraw = true;
+                    document.modified = true;
+                } else {
+                    warn_message = Some("Cannot delete the only row on the screen.".into());
+                }
+            },
             Some(Input::Character('\u{11}')) => { // Ctrl + Q
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.modified {
@@ -1085,6 +1111,32 @@ fn main() {
                     redraw = true;
                 } else {
                     warn_message = Some("Cannot hide the only column on the screen.".into());
+                }
+            },
+            Some(Input::Character('\u{97}')) => { // Ctrl + Alt + W
+                if document.views.top().cols.len() > 0 {
+                    let current_col_id = document.views.top().cols[cursor.col_index];
+
+                    for upd_view in document.views.iter_mut() {
+                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
+                        upd_view.cols.remove(index);
+                    }
+                    if cursor.col_index >= document.views.top().cols.len() {
+                        cursor.col_index -= 1;
+                        cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        cursor.in_cell_pos = TextPosition::end(get_cell(&document,&cursor));
+                    }
+                    let deleted_col_num = document.col_numbers[current_col_id];
+                    for col_num in &mut document.col_numbers {
+                        if *col_num > deleted_col_num {
+                            *col_num -= 1;
+                        }
+                    }
+
+                    redraw = true;
+                    document.modified = true;
+                } else {
+                    warn_message = Some("Cannot delete the only column on the screen.".into());
                 }
             },
             Some(Input::Character('\u{1b}')) => { // Escape
@@ -1246,6 +1298,7 @@ fn main() {
 
                 if changed {
                     redraw = true;
+                    document.modified = true;
                 } else {
                     warn_message = Some("Only rows/columns that are empty can be deleted.".into());
                 }
