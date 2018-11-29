@@ -3,6 +3,10 @@ name = "csvsheet"
 version = "0.1.0"
 authors = ["Jonathan S <gereeter+code@gmail.com>"]
 
+[features]
+default = ["ncurses-ext"]
+ncurses-ext = []
+
 [dependencies]
 ncurses = "5.97.0"
 csv = "1.0.2"
@@ -11,3 +15,4 @@ unicode-width = "0.1.5"
 terminfo = "0.6.1"
 clap = "2.32.0"
 tempfile = "3.0.4"
+const-cstr = "0.3.0"
