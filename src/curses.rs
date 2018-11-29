@@ -112,6 +112,7 @@ pub fn get_mouse() -> Result<ncurses::MEVENT, ()> {
 }
 
 #[derive(Eq, PartialEq, Debug)]
+#[allow(dead_code)]
 pub enum KeyError {
     NotDefined,
     PrefixConflict,

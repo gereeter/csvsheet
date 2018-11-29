@@ -25,6 +25,8 @@ Ctrl+T                     Create and move to the top of a new column to the
                                right of the current column
 Ctrl+Delete                Delete an empty row or column containing the
                                current cell
+Ctrl+Alt+K                 Delete the current row
+Ctrl+Alt+W                 Delete the current column
 
 Ctrl+Z                     Undo the previous action
 Ctrl+Alt+Z                 Redo the last previously undone action

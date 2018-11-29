@@ -668,11 +668,6 @@ fn main() {
         }
     }
 
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    //let mut screen = recurses::Screen::new(&stdin, &stdout);
-
-
     // TODO: check for errors!
     let mut window = unsafe { curses::Window::init_screen() };
     window.set_keypad(true);
@@ -1466,20 +1461,3 @@ fn main() {
         window.refresh();
     }
 }
-
-/*
-fn main() {
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let mut screen = recurses::Screen::new(&stdin, &stdout).unwrap();
-
-    loop {
-       let mut byte = [0];
-       screen.input.read_exact(&mut byte).unwrap();
-       write!(screen.output, "{:02x}\r\n", byte[0]);
-       if (byte[0] == 3) {
-           break;
-       }
-    }    
-}
-*/
