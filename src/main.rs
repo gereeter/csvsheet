@@ -716,15 +716,19 @@ fn main() {
             let _ = define_if_necessary(const_cstr!("\x1b[1;7F").as_cstr(), 538); // Ctrl + Alt + End
         }
 
-        if curses::key_code_for(const_cstr!("\x1b[5~").as_cstr()) == Ok(ncurses::KEY_PPAGE) &&
+        if curses::key_code_for(const_cstr!("\x1b[3~").as_cstr()) == Ok(ncurses::KEY_DC) &&
+           curses::key_code_for(const_cstr!("\x1b[5~").as_cstr()) == Ok(ncurses::KEY_PPAGE) &&
            curses::key_code_for(const_cstr!("\x1b[6~").as_cstr()) == Ok(ncurses::KEY_NPAGE) {
             unsafe {
+                let _ = define_if_necessary(const_cstr!("\x1b[3;5~").as_cstr(), 525); // Ctrl + Delete
                 let _ = define_if_necessary(const_cstr!("\x1b[5;5~").as_cstr(), 563); // Ctrl + PageUp
                 let _ = define_if_necessary(const_cstr!("\x1b[6;5~").as_cstr(), 558); // Ctrl + PageDown
 
+                let _ = define_if_necessary(const_cstr!("\x1b[3;3~").as_cstr(), 523); // Alt + Delete
                 let _ = define_if_necessary(const_cstr!("\x1b[5;3~").as_cstr(), 561); // Alt + PageUp
                 let _ = define_if_necessary(const_cstr!("\x1b[6;3~").as_cstr(), 556); // Alt + PageDown
 
+                let _ = define_if_necessary(const_cstr!("\x1b[3;7~").as_cstr(), 527); // Ctrl + Alt + Delete
                 let _ = define_if_necessary(const_cstr!("\x1b[5;7~").as_cstr(), 565); // Ctrl + Alt + PageUp
                 let _ = define_if_necessary(const_cstr!("\x1b[6;7~").as_cstr(), 560); // Ctrl + Alt + PageDown
             }
