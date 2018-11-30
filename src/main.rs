@@ -1196,7 +1196,7 @@ fn main() {
             },
             // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
             // but it would be much much better to detect the shift key.
-            Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
+            Some(Input::Special(ncurses::KEY_UNDO)) | Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.undo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
@@ -1209,7 +1209,7 @@ fn main() {
                     warn_message = Some("Nothing to undo.".into());
                 }
             },
-            Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
+            Some(Input::Special(ncurses::KEY_REDO)) | Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.redo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
@@ -1222,10 +1222,10 @@ fn main() {
                     warn_message = Some("Nothing to redo.".into());
                 }
             },
-            Some(Input::Character('\u{3}')) => { // Ctrl + C
+            Some(Input::Special(ncurses::KEY_COPY)) | Some(Input::Character('\u{3}')) => { // Ctrl + C
                 warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]".into());
             },
-            Some(Input::Character('\u{6}')) => { // Ctrl + F
+            Some(Input::Special(ncurses::KEY_FIND)) | Some(Input::Character('\u{6}')) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
                 document.views.duplicate_top();
                 document.views.top_mut().ty = ViewType::Filter;
@@ -1271,7 +1271,7 @@ fn main() {
                     warn_message = Some("Cannot delete the only row on the screen.".into());
                 }
             },
-            Some(Input::Character('\u{11}')) => { // Ctrl + Q
+            Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Character('\u{11}')) => { // Ctrl + Q
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.modified {
                     new_mode = Mode::Quitting;
@@ -1332,7 +1332,7 @@ fn main() {
                     warn_message = Some("Cannot delete the only column on the screen.".into());
                 }
             },
-            Some(Input::Character('\u{1b}')) => { // Escape
+            Some(Input::Special(ncurses::KEY_CANCEL)) | Some(Input::Character('\u{1b}')) => { // Escape
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.is_at_base() {
                     warn_message = Some("No views to pop. Press Ctrl+Q to exit.".into());
@@ -1346,7 +1346,7 @@ fn main() {
                     redraw = true;
                 }
             },
-            Some(Input::Character('\u{13}')) => { // Ctrl + S
+            Some(Input::Special(ncurses::KEY_SAVE)) | Some(Input::Character('\u{13}')) => { // Ctrl + S
                 undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
                 match document.save_to(&file_name) {
