@@ -326,7 +326,8 @@ enum UndoOp {
         before_in_cell_pos: TextPosition,
         after_in_cell_pos: TextPosition,
         before_text: ShapedString
-    }
+    },
+    Group(Vec<UndoOp>),
 }
 
 impl UndoOp {
@@ -362,6 +363,13 @@ impl UndoOp {
                     before_text: after_text
                 }
             },
+            UndoOp::Group(mut ops) => {
+                let mut rev_ops = Vec::with_capacity(ops.len());
+                while let Some(op) = ops.pop() {
+                    rev_ops.push(op.apply_to(document, cursor));
+                }
+                UndoOp::Group(rev_ops)
+            },
         }
     }
 }
@@ -393,16 +401,18 @@ impl UndoState {
         self.pristine_state == Some(self.undo_stack.len())
     }
 
-    fn prepare_edit(&mut self, edit_type: Option<EditType>, document: &Document, cursor: &Cursor) {
-        if edit_type.is_some() {
-            self.redo_stack.clear();
-            if let Some(height) = self.pristine_state {
-                if height > self.undo_stack.len() {
-                    self.pristine_state = None;
-                }
+    fn push(&mut self, op: UndoOp) {
+        if let Some(height) = self.pristine_state {
+            if height > self.undo_stack.len() {
+                self.pristine_state = None;
             }
         }
 
+        self.redo_stack.clear();
+        self.undo_stack.push(op);
+    }
+
+    fn prepare_edit(&mut self, edit_type: Option<EditType>, document: &Document, cursor: &Cursor) {
         if edit_type != self.current_edit_type {
             self.current_edit_type = edit_type;
             if let Some(&mut UndoOp::Edit { ref mut after_in_cell_pos, .. }) = self.undo_stack.last_mut() {
@@ -411,7 +421,8 @@ impl UndoState {
             if edit_type.is_some() {
                 let row_id = document.views.top().rows[cursor.row_index];
                 let col_id = document.views.top().cols[cursor.col_index];
-                self.undo_stack.push(UndoOp::Edit {
+
+                self.push(UndoOp::Edit {
                     row_id: row_id,
                     col_id: col_id,
                     before_in_cell_pos: cursor.in_cell_pos,
@@ -788,7 +799,9 @@ fn main() {
     let mut utf8_bytes_left = 0;
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
+    let mut pre_paste_undos = Vec::new();
     let mut inside_paste = false;
+
     let mut startup = true;
     ncurses::ungetch(ncurses::KEY_RESIZE);
     loop {
@@ -1042,16 +1055,20 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
             },
             Some(Input::Special(2000)) => { // Start bracketed paste
-                // TODO: be able to undo the whole paste as one?
                 undo_state.prepare_edit(None, &document, &cursor);
+                pre_paste_undos = std::mem::replace(&mut undo_state.undo_stack, Vec::new());
                 inside_paste = true;
                 data_entry_start_index = cursor.col_index;
                 data_entry_start_display_column = cursor.cell_display_column;
             },
             Some(Input::Special(2001)) => { // End bracketed paste
-                // TODO: be able to undo the whole paste as one?
                 undo_state.prepare_edit(None, &document, &cursor);
                 inside_paste = false;
+                let paste_ops = std::mem::replace(&mut undo_state.undo_stack, pre_paste_undos);
+                if !paste_ops.is_empty() {
+                    undo_state.push(UndoOp::Group(paste_ops));
+                }
+                pre_paste_undos = Vec::new();
                 redraw = true;
             },
             Some(_) if inside_paste => { }, // Everything past this point is special actions, so ignore them
