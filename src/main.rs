@@ -259,6 +259,7 @@ impl Document {
                 *num += 1;
             }
         }
+        self.column_widths.push(0);
         self.col_numbers.push(col_num)
     }
 
@@ -271,6 +272,40 @@ impl Document {
             }
         }
         self.row_numbers.push(row_num)
+    }
+
+    fn delete_col(&mut self, col: ColId) {
+        for upd_view in self.views.iter_mut() {
+            if let Some(index) = upd_view.cols.iter().position(|&col_id| col_id == col) {
+                upd_view.cols.remove(index);
+            }
+        }
+
+        let deleted_col_num = self.col_numbers[col];
+        for col_num in &mut self.col_numbers {
+            if *col_num > deleted_col_num {
+                *col_num -= 1;
+            }
+        }
+
+        self.modified = true;
+    }
+
+    fn delete_row(&mut self, row: RowId) {
+        for upd_view in self.views.iter_mut() {
+            if let Some(index) = upd_view.rows.iter().position(|&row_id| row_id == row) {
+                upd_view.rows.remove(index);
+            }
+        }
+
+        let deleted_row_num = self.row_numbers[row];
+        for row_num in &mut self.row_numbers {
+            if *row_num > deleted_row_num {
+                *row_num -= 1;
+            }
+        }
+
+        self.modified = true;
     }
 
     fn save_to(&mut self, path: &Path) -> Result<(), std::io::Error> {
@@ -327,6 +362,10 @@ enum UndoOp {
         after_in_cell_pos: TextPosition,
         before_text: ShapedString
     },
+    InsertRow(RowId),
+    DeleteRow(RowId),
+    InsertCol(ColId),
+    DeleteCol(ColId),
     Group(Vec<UndoOp>),
 }
 
@@ -362,6 +401,74 @@ impl UndoOp {
                     after_in_cell_pos: before_in_cell_pos,
                     before_text: after_text
                 }
+            },
+            UndoOp::InsertRow(id) => {
+                // TODO: Instead of undoing everything, reapply views as long as the new row matches
+                let base = document.views.clear_to_base();
+                let index = document.row_numbers[id];
+                for &row_id in &base.rows {
+                    if document.row_numbers[row_id] >= index {
+                        document.row_numbers[row_id] += 1;
+                    }
+                }
+                base.rows.insert(index, id);
+
+                cursor.row_index = index;
+                get_cell(document, cursor).move_vert(&mut cursor.in_cell_pos);
+                UndoOp::DeleteRow(id)
+            },
+            UndoOp::DeleteRow(id) => {
+                let deleted_index = loop {
+                    if let Some(index) = document.views.top().rows.iter().position(|&row_id| row_id == id){
+                        break index;
+                    } else {
+                        document.views.pop();
+                    }
+                };
+                document.delete_row(id);
+                if deleted_index < document.views.top().rows.len() {
+                    cursor.row_index = deleted_index;
+                } else {
+                    cursor.row_index = document.views.top().rows.len() - 1;
+                }
+                get_cell(document, cursor).move_vert(&mut cursor.in_cell_pos);
+                UndoOp::InsertRow(id)
+            },
+            UndoOp::InsertCol(id) => {
+                // TODO: Instead of undoing everything, reapply views as long as the new row matches
+                let base = document.views.clear_to_base();
+                let index = document.col_numbers[id];
+                for &col_id in &base.cols {
+                    if document.col_numbers[col_id] >= index {
+                        document.col_numbers[col_id] += 1;
+                    }
+                }
+                base.cols.insert(index, id);
+
+                cursor.col_index = index;
+                cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id] + 3).sum();
+                cursor.in_cell_pos = TextPosition::end(get_cell(document, cursor));
+                UndoOp::DeleteCol(id)
+            },
+            UndoOp::DeleteCol(id) => {
+                let deleted_index = loop {
+                    if let Some(index) = document.views.top().cols.iter().position(|&col_id| col_id == id){
+                        break index;
+                    } else {
+                        document.views.pop();
+                    }
+                };
+                document.delete_col(id);
+                if deleted_index < document.views.top().cols.len() {
+                    cursor.col_index = deleted_index;
+                    cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id] + 3).sum();
+                    cursor.in_cell_pos = TextPosition::beginning();
+                } else {
+                    cursor.col_index = document.views.top().rows.len() - 1;
+                    cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id] + 3).sum();
+                    cursor.in_cell_pos = TextPosition::end(get_cell(document, cursor));
+                }
+                UndoOp::InsertCol(id)
             },
             UndoOp::Group(mut ops) => {
                 let mut rev_ops = Vec::with_capacity(ops.len());
@@ -1025,11 +1132,11 @@ fn main() {
                 if cursor.col_index + 1 == document.views.top().cols.len() {
                     // TODO: is creating a new column really the right behaviour?
                     let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                    document.column_widths.push(0);
                     for upd_view in document.views.iter_mut() {
                         let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                         upd_view.cols.insert(index + 1, new_col_id);
                     }
+                    undo_state.push(UndoOp::DeleteCol(new_col_id));
                     redraw = true;
                 }
                 cursor.cell_display_column += document.column_widths[current_col_id] + 3;
@@ -1046,6 +1153,7 @@ fn main() {
                         let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                         upd_view.rows.insert(index + 1, new_row_id);
                     }
+                    undo_state.push(UndoOp::DeleteRow(new_row_id));
                     redraw = true;
                 }
                 cursor.row_index += 1;
@@ -1151,24 +1259,14 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     let current_row_id = document.views.top().rows[cursor.row_index];
+                    document.delete_row(current_row_id);
+                    undo_state.push(UndoOp::InsertRow(current_row_id));
 
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
-                        upd_view.rows.remove(index);
-                    }
                     if cursor.row_index >= document.views.top().rows.len() {
                         cursor.row_index -= 1;
                         get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                     }
-                    let deleted_row_num = document.row_numbers[current_row_id];
-                    for row_num in &mut document.row_numbers {
-                        if *row_num > deleted_row_num {
-                            *row_num -= 1;
-                        }
-                    }
-
                     redraw = true;
-                    document.modified = true;
                 } else {
                     warn_message = Some("Cannot delete the only row on the screen.".into());
                 }
@@ -1186,7 +1284,7 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                document.column_widths.push(0);
+                undo_state.push(UndoOp::DeleteCol(new_col_id));
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index + 1, new_col_id);
@@ -1198,8 +1296,8 @@ fn main() {
                 redraw = true;
             },
             Some(Input::Character('\u{17}')) => { // Ctrl + W
+                undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().cols.len() > 1 {
-                    undo_state.prepare_edit(None, &document, &cursor);
                     if document.views.top().ty != ViewType::Hide {
                         document.views.duplicate_top();
                         document.views.top_mut().ty = ViewType::Hide;
@@ -1218,27 +1316,18 @@ fn main() {
                 }
             },
             Some(Input::Character('\u{97}')) => { // Ctrl + Alt + W
-                if document.views.top().cols.len() > 0 {
+                undo_state.prepare_edit(None, &document, &cursor);
+                if document.views.top().cols.len() > 1 {
                     let current_col_id = document.views.top().cols[cursor.col_index];
+                    document.delete_col(current_col_id);
+                    undo_state.push(UndoOp::InsertCol(current_col_id));
 
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
-                        upd_view.cols.remove(index);
-                    }
                     if cursor.col_index >= document.views.top().cols.len() {
                         cursor.col_index -= 1;
                         cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                         cursor.in_cell_pos = TextPosition::end(get_cell(&document,&cursor));
                     }
-                    let deleted_col_num = document.col_numbers[current_col_id];
-                    for col_num in &mut document.col_numbers {
-                        if *col_num > deleted_col_num {
-                            *col_num -= 1;
-                        }
-                    }
-
                     redraw = true;
-                    document.modified = true;
                 } else {
                     warn_message = Some("Cannot delete the only column on the screen.".into());
                 }
@@ -1274,7 +1363,7 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id]);
-                document.column_widths.push(0);
+                undo_state.push(UndoOp::DeleteCol(new_col_id));
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index, new_col_id);
@@ -1286,7 +1375,7 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                document.column_widths.push(0);
+                undo_state.push(UndoOp::DeleteCol(new_col_id));
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
                     upd_view.cols.insert(index + 1, new_col_id);
@@ -1300,6 +1389,7 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id]);
+                undo_state.push(UndoOp::DeleteRow(new_row_id));
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                     upd_view.rows.insert(index, new_row_id);
@@ -1311,6 +1401,7 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
+                undo_state.push(UndoOp::DeleteRow(new_row_id));
                 for upd_view in document.views.iter_mut() {
                     let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
                     upd_view.rows.insert(index + 1, new_row_id);
@@ -1328,46 +1419,27 @@ fn main() {
 
                 // Delete row if empty
                 if document.views.top().rows.len() > 1 && document.data[current_row_id].iter().all(|cell| cell.text.is_empty()) {
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
-                        upd_view.rows.remove(index);
-                    }
+                    document.delete_row(current_row_id);
                     if cursor.row_index >= document.views.top().rows.len() {
                         cursor.row_index -= 1;
                         get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
-                    }
-                    let deleted_row_num = document.row_numbers[current_row_id];
-                    for row_num in &mut document.row_numbers {
-                        if *row_num > deleted_row_num {
-                            *row_num -= 1;
-                        }
                     }
                     changed = true;
                 }
 
                 // Delete column if empty
-                if document.views.top().cols.len() > 0 && document.data.iter().all(|row| row[current_col_id].text.is_empty()) {
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
-                        upd_view.cols.remove(index);
-                    }
+                if document.views.top().cols.len() > 1 && document.data.iter().all(|row| row[current_col_id].text.is_empty()) {
+                    document.delete_col(current_col_id);
                     if cursor.col_index >= document.views.top().cols.len() {
                         cursor.col_index -= 1;
                         cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                         cursor.in_cell_pos = TextPosition::end(get_cell(&document,&cursor));
-                    }
-                    let deleted_col_num = document.col_numbers[current_col_id];
-                    for col_num in &mut document.col_numbers {
-                        if *col_num > deleted_col_num {
-                            *col_num -= 1;
-                        }
                     }
                     changed = true;
                 }
 
                 if changed {
                     redraw = true;
-                    document.modified = true;
                 } else {
                     warn_message = Some("Only rows/columns that are empty can be deleted.".into());
                 }

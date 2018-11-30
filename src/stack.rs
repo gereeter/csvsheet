@@ -19,6 +19,11 @@ impl<T: Clone> RefillingStack<T> {
         self.variants.is_empty()
     }
 
+    pub fn clear_to_base(&mut self) -> &mut T {
+        self.variants.clear();
+        &mut self.base
+    }
+
     pub fn top(&self) -> &T {
         self.variants.last().unwrap_or(&self.base)
     }
