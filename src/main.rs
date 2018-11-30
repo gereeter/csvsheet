@@ -23,6 +23,7 @@ use std::cmp;
 use std::iter;
 use std::path::Path;
 use std::borrow::Cow;
+use std::io::Write;
 
 use csv::ReaderBuilder;
 use unicode_segmentation::UnicodeSegmentation;
@@ -609,6 +610,31 @@ fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>
 
 const HELP_TEXT: &str = include_str!("help.md");
 
+fn write_now(data: &[u8]) -> Result<(), std::io::Error> {
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    lock.write_all(data)?;
+    lock.flush()?;
+    Ok(())
+}
+
+struct BracketedPaste {
+    _priv: ()
+}
+
+impl Drop for BracketedPaste {
+    fn drop(&mut self) {
+        let _ = write_now(b"\x1b[?2004l");
+    }
+}
+
+impl BracketedPaste {
+    fn start() -> Option<BracketedPaste> {
+        write_now(b"\x1b[?2004h").ok()?;
+        Some(BracketedPaste { _priv: () })
+    }
+}
+
 fn main() {
     let arg_matches = clap::App::new("CSVsheet")
                                     .version("0.1")
@@ -676,6 +702,14 @@ fn main() {
     ncurses::mousemask(ncurses::ALL_MOUSE_EVENTS as ncurses::mmask_t, None);
     // TODO: consider behaviour around double, triple clicks
     ncurses::mouseinterval(0); // We care about up/down, not clicks
+
+    // Start bracketed paste mode, but only if we can successfully handle the brackets
+    let _bpaste_guard = if unsafe { curses::define_key_code(const_cstr!("\x1b[200~").as_cstr(), 2000) }.is_ok() &&
+                           unsafe { curses::define_key_code(const_cstr!("\x1b[201~").as_cstr(), 2001) }.is_ok() {
+        BracketedPaste::start()
+    } else {
+        None
+    };
 
     // We use Esc heavily and modern computers are quite fast, so unless the user has overridden it directly,
     // set ESCDELAY to a small 25ms. The normal default of 1 second is too high.
@@ -754,6 +788,7 @@ fn main() {
     let mut utf8_bytes_left = 0;
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
+    let mut inside_paste = false;
     let mut startup = true;
     ncurses::ungetch(ncurses::KEY_RESIZE);
     loop {
@@ -912,63 +947,114 @@ fn main() {
                 }
             }
             // Navigation
-            let mut new_pos = cursor.in_cell_pos;
-            try_fit_x = handle_navigation(input, get_cell(&document, &cursor), &mut new_pos, |dir, skip| {
-                match dir {
-                    Direction::Left if cursor.col_index > 0 => match skip {
-                        Skip::Many | Skip::All => {
-                            cursor.col_index = 0;
-                            cursor.cell_display_column = 0;
+            if !inside_paste {
+                let mut new_pos = cursor.in_cell_pos;
+                try_fit_x = handle_navigation(input, get_cell(&document, &cursor), &mut new_pos, |dir, skip| {
+                    match dir {
+                        Direction::Left if cursor.col_index > 0 => match skip {
+                            Skip::Many | Skip::All => {
+                                cursor.col_index = 0;
+                                cursor.cell_display_column = 0;
+                            },
+                            Skip::One => {
+                                cursor.col_index -= 1;
+                                cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                            }
                         },
-                        Skip::One => {
-                            cursor.col_index -= 1;
-                            cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
+                        Direction::Right if cursor.col_index + 1 < document.views.top().cols.len() => match skip {
+                            Skip::Many | Skip::All => {
+                                cursor.col_index = document.views.top().cols.len() - 1;
+                                cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
+                            },
+                            Skip::One => {
+                                cursor.col_index += 1;
+                                cursor.cell_display_column += document.column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
+                            }
+                        },
+                        Direction::Up if cursor.row_index > 0 => match skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
+                            Skip::All => {
+                                cursor.row_index = 0;
+                            },
+                            Skip::Many => {
+                                let page_size = height - document.views.top().headers;
+                                cursor.row_index = cursor.row_index.saturating_sub(page_size);
+                            },
+                            Skip::One => {
+                                cursor.row_index -= 1;
+                            }
+                        },
+                        Direction::Down if cursor.row_index + 1 < document.views.top().rows.len() => match skip {
+                            Skip::All => {
+                                cursor.row_index = document.views.top().rows.len() - 1;
+                            },
+                            Skip::Many => {
+                                let page_size = height - document.views.top().headers;
+                                cursor.row_index = cmp::min(cursor.row_index + page_size, document.views.top().rows.len() - 1);
+                            },
+                            Skip::One => {
+                                cursor.row_index += 1;
+                            }
+                        },
+                        _ => {
+                            return None;
                         }
-                    },
-                    Direction::Right if cursor.col_index + 1 < document.views.top().cols.len() => match skip {
-                        Skip::Many | Skip::All => {
-                            cursor.col_index = document.views.top().cols.len() - 1;
-                            cursor.cell_display_column = document.views.top().cols[..cursor.col_index].iter().map(|&col_id| document.column_widths[col_id]).sum::<usize>() + 3 * cursor.col_index;
-                        },
-                        Skip::One => {
-                            cursor.col_index += 1;
-                            cursor.cell_display_column += document.column_widths[document.views.top().cols[cursor.col_index - 1]] + 3;
-                        }
-                    },
-                    Direction::Up if cursor.row_index > 0 => match skip { // TODO: consider jumping farther/over empty spots for Ctrl + Up?
-                        Skip::All => {
-                            cursor.row_index = 0;
-                        },
-                        Skip::Many => {
-                            let page_size = height - document.views.top().headers;
-                            cursor.row_index = cursor.row_index.saturating_sub(page_size);
-                        },
-                        Skip::One => {
-                            cursor.row_index -= 1;
-                        }
-                    },
-                    Direction::Down if cursor.row_index + 1 < document.views.top().rows.len() => match skip {
-                        Skip::All => {
-                            cursor.row_index = document.views.top().rows.len() - 1;
-                        },
-                        Skip::Many => {
-                            let page_size = height - document.views.top().headers;
-                            cursor.row_index = cmp::min(cursor.row_index + page_size, document.views.top().rows.len() - 1);
-                        },
-                        Skip::One => {
-                            cursor.row_index += 1;
-                        }
-                    },
-                    _ => {
-                        return None;
                     }
+                    data_entry_start_index = cursor.col_index;
+                    data_entry_start_display_column = cursor.cell_display_column;
+                    Some(&document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]])
+                });
+                cursor.in_cell_pos = new_pos;
+            }
+        match input {
+            Some(Input::Character('\t')) => {
+                undo_state.prepare_edit(None, &document, &cursor);
+                let current_col_id = document.views.top().cols[cursor.col_index];
+                if cursor.col_index + 1 == document.views.top().cols.len() {
+                    // TODO: is creating a new column really the right behaviour?
+                    let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
+                    document.column_widths.push(0);
+                    for upd_view in document.views.iter_mut() {
+                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
+                        upd_view.cols.insert(index + 1, new_col_id);
+                    }
+                    redraw = true;
                 }
+                cursor.cell_display_column += document.column_widths[current_col_id] + 3;
+                cursor.col_index += 1;
+                // TODO: or jump to the beginning?
+                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+            },
+            Some(Input::Character('\n')) => {
+                undo_state.prepare_edit(None, &document, &cursor);
+                let current_row_id = document.views.top().rows[cursor.row_index];
+                if cursor.row_index + 1 == document.views.top().rows.len() {
+                    let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
+                    for upd_view in document.views.iter_mut() {
+                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
+                        upd_view.rows.insert(index + 1, new_row_id);
+                    }
+                    redraw = true;
+                }
+                cursor.row_index += 1;
+                cursor.col_index = data_entry_start_index;
+                cursor.cell_display_column = data_entry_start_display_column;
+                // TODO: or jump to the beginning
+                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+            },
+            Some(Input::Special(2000)) => { // Start bracketed paste
+                // TODO: be able to undo the whole paste as one?
+                undo_state.prepare_edit(None, &document, &cursor);
+                inside_paste = true;
                 data_entry_start_index = cursor.col_index;
                 data_entry_start_display_column = cursor.cell_display_column;
-                Some(&document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]])
-            });
-            cursor.in_cell_pos = new_pos;
-        match input {
+            },
+            Some(Input::Special(2001)) => { // End bracketed paste
+                // TODO: be able to undo the whole paste as one?
+                undo_state.prepare_edit(None, &document, &cursor);
+                inside_paste = false;
+                redraw = true;
+            },
+            Some(_) if inside_paste => { }, // Everything past this point is special actions, so ignore them
             Some(Input::Special(ncurses::KEY_RESIZE)) => {
                 let (new_height, new_width) = window.get_max_yx();
                 height = new_height as usize;
@@ -1193,41 +1279,6 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::Character('\t')) => {
-                undo_state.prepare_edit(None, &document, &cursor);
-                let current_col_id = document.views.top().cols[cursor.col_index];
-                if cursor.col_index + 1 == document.views.top().cols.len() {
-                    // TODO: is creating a new column really the right behaviour?
-                    let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
-                    document.column_widths.push(0);
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
-                        upd_view.cols.insert(index + 1, new_col_id);
-                    }
-                    redraw = true;
-                }
-                cursor.cell_display_column += document.column_widths[current_col_id] + 3;
-                cursor.col_index += 1;
-                // TODO: or jump to the beginning?
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
-            },
-            Some(Input::Character('\n')) => {
-                undo_state.prepare_edit(None, &document, &cursor);
-                let current_row_id = document.views.top().rows[cursor.row_index];
-                if cursor.row_index + 1 == document.views.top().rows.len() {
-                    let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
-                    for upd_view in document.views.iter_mut() {
-                        let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
-                        upd_view.rows.insert(index + 1, new_row_id);
-                    }
-                    redraw = true;
-                }
-                cursor.row_index += 1;
-                cursor.col_index = data_entry_start_index;
-                cursor.cell_display_column = data_entry_start_display_column;
-                // TODO: or jump to the beginning
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
-            },
             Some(Input::Special(572)) | Some(Input::Special(576)) => { // [Ctrl +] Alt + Up
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
@@ -1421,49 +1472,51 @@ fn main() {
         screen_x = target_x - offset_x;
         screen_y = target_y - offset_y;
 
-        if redraw {
-            window.erase();
+        if !inside_paste {
+            if redraw {
+                window.erase();
 
-            if let Mode::Help = mode {
-                window.mv_add_str(0, 0, HELP_TEXT);
-            } else {
-                for y in 0..document.views.top().headers {
-                    display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, A_BOLD());
-                }
+                if let Mode::Help = mode {
+                    window.mv_add_str(0, 0, HELP_TEXT);
+                } else {
+                    for y in 0..document.views.top().headers {
+                        display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, A_BOLD());
+                    }
 
-                for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
-                    display_row(&document, row, &mut window, row_i + document.views.top().headers, offset_x, offset_x + width, A_NORMAL());
+                    for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
+                        display_row(&document, row, &mut window, row_i + document.views.top().headers, offset_x, offset_x + width, A_NORMAL());
+                    }
                 }
             }
-        }
 
-        window.set_attrs(A_NORMAL());
-        window.mv(height as i32 - 1, 0);
-        window.clear_to_end_of_line();
-        if let Mode::Filter { ref query, .. } = mode {
-            window.mv_add_str(height as i32 - 1, 0, "Find rows containing: ");
-            window.add_str(&query.text);
-        } else if let Mode::Quitting = mode {
-            window.mv_add_str(height as i32 - 1, 0, "Save before quitting [y/n/Esc]? ");
-        } else if let Some(message) = warn_message {
-            window.mv_add_str(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, &message);
-        } else {
-            // TODO(efficiency): avoid allocations
-            let status = format!(
-                "[ row {}/{}, col {}/{}, char {}/{}, last_input: {:?} ]",
-                document.row_numbers[document.views.top().rows[cursor.row_index]] + 1, document.height(),
-                document.col_numbers[document.views.top().cols[cursor.col_index]] + 1, document.width(),
-                cursor.in_cell_pos.grapheme_index, get_cell(&document, &cursor).grapheme_info.len(),
-                input
-            );
-            window.mv_add_str(height as i32 - 1, ((width.saturating_sub(status.len())) / 2) as i32, &status);
-        }
+            window.set_attrs(A_NORMAL());
+            window.mv(height as i32 - 1, 0);
+            window.clear_to_end_of_line();
+            if let Mode::Filter { ref query, .. } = mode {
+                window.mv_add_str(height as i32 - 1, 0, "Find rows containing: ");
+                window.add_str(&query.text);
+            } else if let Mode::Quitting = mode {
+                window.mv_add_str(height as i32 - 1, 0, "Save before quitting [y/n/Esc]? ");
+            } else if let Some(message) = warn_message {
+                window.mv_add_str(height as i32 - 1, ((width.saturating_sub(message.len())) / 2) as i32, &message);
+            } else {
+                // TODO(efficiency): avoid allocations
+                let status = format!(
+                    "[ row {}/{}, col {}/{}, char {}/{}, last_input: {:?} ]",
+                    document.row_numbers[document.views.top().rows[cursor.row_index]] + 1, document.height(),
+                    document.col_numbers[document.views.top().cols[cursor.col_index]] + 1, document.width(),
+                    cursor.in_cell_pos.grapheme_index, get_cell(&document, &cursor).grapheme_info.len(),
+                    input
+                );
+                window.mv_add_str(height as i32 - 1, ((width.saturating_sub(status.len())) / 2) as i32, &status);
+            }
 
-        if let Mode::Normal = mode {
-            window.mv(screen_y as i32, screen_x as i32);
-        } else if let Mode::Filter { ref query, query_pos, .. } = mode {
-            window.mv(height as i32 - 1, 22 + query.display_column(query_pos.grapheme_index) as i32);
+            if let Mode::Normal = mode {
+                window.mv(screen_y as i32, screen_x as i32);
+            } else if let Mode::Filter { ref query, query_pos, .. } = mode {
+                window.mv(height as i32 - 1, 22 + query.display_column(query_pos.grapheme_index) as i32);
+            }
+            window.refresh();
         }
-        window.refresh();
     }
 }
