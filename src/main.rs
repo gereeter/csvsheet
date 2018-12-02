@@ -753,6 +753,29 @@ impl BracketedPaste {
     }
 }
 
+struct XTermModifyOtherKeys {
+    _priv: ()
+}
+
+impl Drop for XTermModifyOtherKeys {
+    fn drop(&mut self) {
+        let _ = write_now(b"\x1b[>4n");
+    }
+}
+
+impl XTermModifyOtherKeys {
+    fn start() -> Option<XTermModifyOtherKeys> {
+        write_now(b"\x1b[>4;2m").ok()?;
+        Some(XTermModifyOtherKeys { _priv: () })
+    }
+}
+
+enum XTermModifyKeyState {
+    Off,
+    ParsingMode(u32),
+    ParsingChar(u32, u32)
+}
+
 fn main() {
     let arg_matches = clap::App::new("CSVsheet")
                                     .version("0.1")
@@ -822,9 +845,16 @@ fn main() {
     ncurses::mouseinterval(0); // We care about up/down, not clicks
 
     // Start bracketed paste mode, but only if we can successfully handle the brackets
+    // TODO: Should we query support first?
     let _bpaste_guard = if unsafe { curses::define_key_code(const_cstr!("\x1b[200~").as_cstr(), 2000) }.is_ok() &&
                            unsafe { curses::define_key_code(const_cstr!("\x1b[201~").as_cstr(), 2001) }.is_ok() {
         BracketedPaste::start()
+    } else {
+        None
+    };
+
+    let _xterm_modify_other_keys_guard = if unsafe { curses::define_key_code(const_cstr!("\x1b[27;").as_cstr(), 2100) }.is_ok() {
+        XTermModifyOtherKeys::start()
     } else {
         None
     };
@@ -902,8 +932,11 @@ fn main() {
     let mut data_entry_start_display_column = 0;
     let mut screen_x = 0;
     let mut screen_y = 0;
+
     let mut in_progress_codepoint = 0;
     let mut utf8_bytes_left = 0;
+    let mut xterm_modify_key_state = XTermModifyKeyState::Off;
+
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
     let mut pre_paste_undos = Vec::new();
@@ -952,6 +985,44 @@ fn main() {
                 input = Some(Input::Character(std::char::from_u32(in_progress_codepoint).expect("BUG: Bad char cast")));
             } else {
                 input = None;
+            }
+        }
+
+        // Handle XTerm's modifyOtherKeys extension, parsing manually
+        if let Some(Input::Special(2100)) = input {
+            xterm_modify_key_state = XTermModifyKeyState::ParsingMode(0);
+        }
+        match xterm_modify_key_state {
+            XTermModifyKeyState::Off => { },
+            XTermModifyKeyState::ParsingMode(mode_so_far) => {
+                if let Some(Input::Character(chr)) = input {
+                    if let Some(digit) = chr.to_digit(10) {
+                        xterm_modify_key_state = XTermModifyKeyState::ParsingMode(mode_so_far * 10 + digit);
+                        input = None;
+                    } else if chr == ';' {
+                        xterm_modify_key_state = XTermModifyKeyState::ParsingChar(mode_so_far, 0);
+                        input = None;
+                    }
+                }
+            },
+            XTermModifyKeyState::ParsingChar(mode, char_so_far) => {
+                if let Some(Input::Character(chr)) = input {
+                    if let Some(digit) = chr.to_digit(10) {
+                        xterm_modify_key_state = XTermModifyKeyState::ParsingChar(mode, char_so_far * 10 + digit);
+                        input = None;
+                    } else if chr == '~' {
+                        xterm_modify_key_state = XTermModifyKeyState::Off;
+                        if 1 <= mode {
+                            let ctrl = (mode - 1) & 0b100 != 0;
+                            let alt = (mode - 1) & 0b10 != 0;
+                            let shift = (mode - 1) & 0b1 != 0;
+                            input = Some(Input::Decomposed(ctrl, alt, shift, char_so_far));
+                        } else {
+                            eprintln!("0 mode?");
+                            input = None;
+                        }
+                    }
+                }
             }
         }
 
@@ -1196,7 +1267,7 @@ fn main() {
             },
             // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
             // but it would be much much better to detect the shift key.
-            Some(Input::Special(ncurses::KEY_UNDO)) | Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
+            Some(Input::Special(ncurses::KEY_UNDO)) | Some(Input::Decomposed(true, false, _, 122)) | Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.undo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
@@ -1209,7 +1280,7 @@ fn main() {
                     warn_message = Some("Nothing to undo.".into());
                 }
             },
-            Some(Input::Special(ncurses::KEY_REDO)) | Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
+            Some(Input::Special(ncurses::KEY_REDO)) | Some(Input::Decomposed(true, true, _, 122)) | Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.redo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
@@ -1222,10 +1293,10 @@ fn main() {
                     warn_message = Some("Nothing to redo.".into());
                 }
             },
-            Some(Input::Special(ncurses::KEY_COPY)) | Some(Input::Character('\u{3}')) => { // Ctrl + C
+            Some(Input::Special(ncurses::KEY_COPY)) | Some(Input::Decomposed(true, false, _, 99)) | Some(Input::Character('\u{3}')) => { // Ctrl + C
                 warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]".into());
             },
-            Some(Input::Special(ncurses::KEY_FIND)) | Some(Input::Character('\u{6}')) => { // Ctrl + F
+            Some(Input::Special(ncurses::KEY_FIND)) | Some(Input::Decomposed(true, false, _, 102)) | Some(Input::Character('\u{6}')) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
                 document.views.duplicate_top();
                 document.views.top_mut().ty = ViewType::Filter;
@@ -1238,7 +1309,7 @@ fn main() {
             // TODO: better shortcut? Actually delete the line and have a way to paste it?
             // It seems mostly undefined in "standard" desktop programs (only create hyperlink, but eh, no one knows or cares about that).
             // This sort of matches the "Kill" up to end of line behavior or nano or emacs or unixy things. More like nano than emacs.
-            Some(Input::Character('\u{b}')) => { // Ctrl + K
+            Some(Input::Decomposed(true, false, _, 107)) | Some(Input::Character('\u{b}')) => { // Ctrl + K
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     if document.views.top().ty != ViewType::Hide {
@@ -1255,7 +1326,7 @@ fn main() {
                     warn_message = Some("Cannot hide the only row on the screen.".into());
                 }
             },
-            Some(Input::Character('\u{8b}')) => { // Ctrl + Alt + K
+            Some(Input::Decomposed(true, true, _, 107)) | Some(Input::Character('\u{8b}')) => { // Ctrl + Alt + K
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     let current_row_id = document.views.top().rows[cursor.row_index];
@@ -1271,7 +1342,7 @@ fn main() {
                     warn_message = Some("Cannot delete the only row on the screen.".into());
                 }
             },
-            Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Character('\u{11}')) => { // Ctrl + Q
+            Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) | Some(Input::Character('\u{11}')) => { // Ctrl + Q
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.modified {
                     new_mode = Mode::Quitting;
@@ -1280,7 +1351,7 @@ fn main() {
                     break;
                 }
             },
-            Some(Input::Character('\u{14}')) => { // Ctrl + T
+            Some(Input::Decomposed(true, false, _, 116)) | Some(Input::Character('\u{14}')) => { // Ctrl + T
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -1295,7 +1366,7 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::Character('\u{17}')) => { // Ctrl + W
+            Some(Input::Decomposed(true, false, _, 119)) | Some(Input::Character('\u{17}')) => { // Ctrl + W
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().cols.len() > 1 {
                     if document.views.top().ty != ViewType::Hide {
@@ -1315,7 +1386,7 @@ fn main() {
                     warn_message = Some("Cannot hide the only column on the screen.".into());
                 }
             },
-            Some(Input::Character('\u{97}')) => { // Ctrl + Alt + W
+            Some(Input::Decomposed(true, true, _, 119)) | Some(Input::Character('\u{97}')) => { // Ctrl + Alt + W
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().cols.len() > 1 {
                     let current_col_id = document.views.top().cols[cursor.col_index];
@@ -1346,7 +1417,7 @@ fn main() {
                     redraw = true;
                 }
             },
-            Some(Input::Special(ncurses::KEY_SAVE)) | Some(Input::Character('\u{13}')) => { // Ctrl + S
+            Some(Input::Special(ncurses::KEY_SAVE)) | Some(Input::Decomposed(true, false, _, 115)) | Some(Input::Character('\u{13}')) => { // Ctrl + S
                 undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
                 match document.save_to(&file_name) {

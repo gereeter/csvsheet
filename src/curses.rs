@@ -16,6 +16,7 @@ pub enum Input {
     Byte(u8),
     Character(char),
     Special(i32),
+    Decomposed(bool, bool, bool, u32),
 }
 
 // FIXME: error handling
