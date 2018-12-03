@@ -254,11 +254,13 @@ impl Document {
         for row in &mut self.data {
             row.push(ShapedString::new());
         }
-        for num in &mut self.col_numbers {
-            if *num >= col_num {
-                *num += 1;
+
+        for &other_col in self.views.base().cols.iter() {
+            if self.col_numbers[other_col] >= col_num {
+                self.col_numbers[other_col] += 1;
             }
         }
+
         self.column_widths.push(0);
         self.col_numbers.push(col_num)
     }
@@ -266,11 +268,13 @@ impl Document {
     fn insert_row(&mut self, row_num: usize) -> RowId {
         self.modified = true;
         self.data.push(IndexVec::from_vec(vec![ShapedString::new(); self.width()]));
-        for num in &mut self.row_numbers {
-            if *num >= row_num {
-                *num += 1;
+
+        for &other_row in self.views.base().rows.iter() {
+            if self.row_numbers[other_row] >= row_num {
+                self.row_numbers[other_row] += 1;
             }
         }
+
         self.row_numbers.push(row_num)
     }
 
@@ -282,9 +286,9 @@ impl Document {
         }
 
         let deleted_col_num = self.col_numbers[col];
-        for col_num in &mut self.col_numbers {
-            if *col_num > deleted_col_num {
-                *col_num -= 1;
+        for &other_col in self.views.base().cols.iter() {
+            if self.col_numbers[other_col] > deleted_col_num {
+                self.col_numbers[other_col] -= 1;
             }
         }
 
@@ -299,9 +303,9 @@ impl Document {
         }
 
         let deleted_row_num = self.row_numbers[row];
-        for row_num in &mut self.row_numbers {
-            if *row_num > deleted_row_num {
-                *row_num -= 1;
+        for &other_row in self.views.base().rows.iter() {
+            if self.row_numbers[other_row] > deleted_row_num {
+                self.row_numbers[other_row] -= 1;
             }
         }
 
