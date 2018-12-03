@@ -299,7 +299,11 @@ impl InputStream {
                         } else if chr == '~' {
                             self.xterm_modify_key_state = XTermModifyKeyState::Off;
                             if 1 <= mode {
-                                return Ok(make_input(mode as i32 - 1, char_so_far as i32));
+                                if mode == 2 { // Just shift - XTerm doesn't pass through all shifted characters, though it does some
+                                    return Ok(Input::Character(std::char::from_u32(char_so_far).unwrap()));
+                                } else {
+                                    return Ok(make_input(mode as i32 - 1, char_so_far as i32))
+                                };
                             } else {
                                 eprintln!("0 mode?");
                                 continue;
