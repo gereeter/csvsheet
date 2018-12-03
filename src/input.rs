@@ -221,6 +221,42 @@ impl InputStream {
             }
         }
 
+        // Hackily detect if our terminal is using rxvt-style codes and add the rest if necessary. Note that this
+        // should never override an existing binding, so it shouldn't cause problems even if it happens to be enabled
+        // on a terminal that uses different bindings.
+        if curses::key_code_for(const_cstr!("\x1b[A").as_cstr()) == Ok(ncurses::KEY_UP) &&
+           curses::key_code_for(const_cstr!("\x1b[B").as_cstr()) == Ok(ncurses::KEY_DOWN) &&
+           curses::key_code_for(const_cstr!("\x1b[C").as_cstr()) == Ok(ncurses::KEY_RIGHT) &&
+           curses::key_code_for(const_cstr!("\x1b[D").as_cstr()) == Ok(ncurses::KEY_LEFT) &&
+           curses::key_code_for(const_cstr!("\x1b[c").as_cstr()) == Ok(ncurses::KEY_SRIGHT) &&
+           curses::key_code_for(const_cstr!("\x1b[d").as_cstr()) == Ok(ncurses::KEY_SLEFT) {
+
+            let _ = define_if_necessary(const_cstr!("\x1bOa").as_cstr(), 2340);
+            let _ = define_if_necessary(const_cstr!("\x1bOb").as_cstr(), 2341);
+            let _ = define_if_necessary(const_cstr!("\x1bOc").as_cstr(), 2342);
+            let _ = define_if_necessary(const_cstr!("\x1bOd").as_cstr(), 2343);
+            // And AltSendsEscape versions as well (TODO: fold into a general AltSendsEscape mechanism)
+            let _ = define_if_necessary(const_cstr!("\x1b\x1bOa").as_cstr(), 2360);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1bOb").as_cstr(), 2361);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1bOc").as_cstr(), 2362);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1bOd").as_cstr(), 2363);
+
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[A").as_cstr(), 2320);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[B").as_cstr(), 2321);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[C").as_cstr(), 2322);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[D").as_cstr(), 2323);
+
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[a").as_cstr(), 2330);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[b").as_cstr(), 2331);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[c").as_cstr(), 2332);
+            let _ = define_if_necessary(const_cstr!("\x1b\x1b[d").as_cstr(), 2333);
+
+            if curses::key_code_for(const_cstr!("\x1b[3~").as_cstr()) == Ok(ncurses::KEY_DC) {
+                let _ = define_if_necessary(const_cstr!("\x1b[3^").as_cstr(), 2348);
+                let _ = define_if_necessary(const_cstr!("\x1b\x1b[3^").as_cstr(), 2368);
+            }
+        }
+
         // TODO: What about in front of, e.g., arrow keys? Generalize this.
         // Brute-force handle the most common cases for AltSendsEscape
         for byte in (1..=26).chain(97..=122) {
@@ -355,6 +391,18 @@ impl InputStream {
                     => return Ok(Input::Decomposed(true, true, false, chr as i32 - 32)),
                 Input::Special(code @ 3001..=3026) => return Ok(Input::Decomposed(true, true, false, code - 3000 + 96)),
                 Input::Special(code @ 3097..=3122) => return Ok(Input::Decomposed(false, true, false, code - 3000)),
+                Input::Special(code @ 2300..=2399) => {
+                    let base_code = code - 2300;
+                    let mode = base_code / 10;
+                    match base_code % 10 {
+                        0 => return Ok(make_input(mode, ncurses::KEY_UP)),
+                        1 => return Ok(make_input(mode, ncurses::KEY_DOWN)),
+                        2 => return Ok(make_input(mode, ncurses::KEY_RIGHT)),
+                        3 => return Ok(make_input(mode, ncurses::KEY_LEFT)),
+                        8 => return Ok(make_input(mode, ncurses::KEY_DC)),
+                        _ => { }
+                    }
+                },
                 _ => { }
             }
 
