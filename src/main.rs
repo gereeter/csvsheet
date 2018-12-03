@@ -1020,8 +1020,6 @@ fn main() {
             }
         }
 
-        eprintln!("Input: {:?}", input);
-
         // Handle XTerm's modifyOtherKeys extension, parsing manually
         if let Some(Input::Special(2100)) = input {
             xterm_modify_key_state = XTermModifyKeyState::ParsingMode(0);
@@ -1083,7 +1081,6 @@ fn main() {
                 _ => { }
             },
             KittyFullModeState::ParsingModifiers(key_type) => {
-                eprintln!("Parsing modifiers: {:?}", input);
                 if let Some(Input::Character(chr)) = input {
                     // Decode base 64
                     let decoded = if 'A' <= chr && chr <= 'Z' {
@@ -1106,7 +1103,6 @@ fn main() {
                 }
             },
             KittyFullModeState::ParsingKey(key_type, mode, key_so_far) => {
-                eprintln!("Parsing key: {:?}", input);
                 if let Some(Input::Character(chr)) = input {
                     let decoded = if 'A' <= chr && chr <= 'Z' {
                         Some(chr as u32 - 'A' as u32)
