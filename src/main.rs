@@ -827,7 +827,7 @@ fn main() {
             redraw = true;
         }
 
-        if let Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) | Some(Input::Character('\u{11}')) = input { // Ctrl + Q
+        if let Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) = input { // Ctrl + Q
             undo_state.prepare_edit(None, &document, &cursor);
             if document.modified {
                 new_mode = Mode::Quitting;
@@ -1059,7 +1059,7 @@ fn main() {
             },
             // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
             // but it would be much much better to detect the shift key.
-            Some(Input::Special(ncurses::KEY_UNDO)) | Some(Input::Decomposed(true, false, _, 122)) | Some(Input::Character('\u{1a}')) => { // Ctrl + [Shift +] Z
+            Some(Input::Special(ncurses::KEY_UNDO)) | Some(Input::Decomposed(true, false, _, 122)) => { // Ctrl + [Shift +] Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.undo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
@@ -1072,7 +1072,7 @@ fn main() {
                     warn_message = Some("Nothing to undo.".into());
                 }
             },
-            Some(Input::Special(ncurses::KEY_REDO)) | Some(Input::Decomposed(true, true, _, 122)) | Some(Input::Character('\u{9a}')) => { // Ctrl + Alt + Z
+            Some(Input::Special(ncurses::KEY_REDO)) | Some(Input::Decomposed(true, true, _, 122)) => { // Ctrl + Alt + Z
                 undo_state.prepare_edit(None, &document, &cursor);
                 if let Some(op) = undo_state.redo_stack.pop() {
                     let inverse_op = op.apply_to(&mut document, &mut cursor);
@@ -1085,10 +1085,10 @@ fn main() {
                     warn_message = Some("Nothing to redo.".into());
                 }
             },
-            Some(Input::Special(ncurses::KEY_COPY)) | Some(Input::Decomposed(true, false, _, 99)) | Some(Input::Character('\u{3}')) => { // Ctrl + C
+            Some(Input::Special(ncurses::KEY_COPY)) | Some(Input::Decomposed(true, false, _, 99)) => { // Ctrl + C
                 warn_message = Some("Nothing selected to copy. [NOTE: Selection is currently unimplemented.]".into());
             },
-            Some(Input::Special(ncurses::KEY_FIND)) | Some(Input::Decomposed(true, false, _, 102)) | Some(Input::Character('\u{6}')) => { // Ctrl + F
+            Some(Input::Special(ncurses::KEY_FIND)) | Some(Input::Decomposed(true, false, _, 102)) => { // Ctrl + F
                 undo_state.prepare_edit(None, &document, &cursor);
                 document.views.duplicate_top();
                 document.views.top_mut().ty = ViewType::Filter;
@@ -1101,7 +1101,7 @@ fn main() {
             // TODO: better shortcut? Actually delete the line and have a way to paste it?
             // It seems mostly undefined in "standard" desktop programs (only create hyperlink, but eh, no one knows or cares about that).
             // This sort of matches the "Kill" up to end of line behavior or nano or emacs or unixy things. More like nano than emacs.
-            Some(Input::Decomposed(true, false, _, 107)) | Some(Input::Character('\u{b}')) => { // Ctrl + K
+            Some(Input::Decomposed(true, false, _, 107)) => { // Ctrl + K
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     if document.views.top().ty != ViewType::Hide {
@@ -1118,7 +1118,7 @@ fn main() {
                     warn_message = Some("Cannot hide the only row on the screen.".into());
                 }
             },
-            Some(Input::Decomposed(true, true, _, 107)) | Some(Input::Character('\u{8b}')) => { // Ctrl + Alt + K
+            Some(Input::Decomposed(true, true, _, 107)) => { // Ctrl + Alt + K
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     let current_row_id = document.views.top().rows[cursor.row_index];
@@ -1134,7 +1134,7 @@ fn main() {
                     warn_message = Some("Cannot delete the only row on the screen.".into());
                 }
             },
-            Some(Input::Decomposed(true, false, _, 116)) | Some(Input::Character('\u{14}')) => { // Ctrl + T
+            Some(Input::Decomposed(true, false, _, 116)) => { // Ctrl + T
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -1149,7 +1149,7 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::Decomposed(true, false, _, 119)) | Some(Input::Character('\u{17}')) => { // Ctrl + W
+            Some(Input::Decomposed(true, false, _, 119)) => { // Ctrl + W
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().cols.len() > 1 {
                     if document.views.top().ty != ViewType::Hide {
@@ -1169,7 +1169,7 @@ fn main() {
                     warn_message = Some("Cannot hide the only column on the screen.".into());
                 }
             },
-            Some(Input::Decomposed(true, true, _, 119)) | Some(Input::Character('\u{97}')) => { // Ctrl + Alt + W
+            Some(Input::Decomposed(true, true, _, 119)) => { // Ctrl + Alt + W
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().cols.len() > 1 {
                     let current_col_id = document.views.top().cols[cursor.col_index];
@@ -1200,7 +1200,7 @@ fn main() {
                     redraw = true;
                 }
             },
-            Some(Input::Special(ncurses::KEY_SAVE)) | Some(Input::Decomposed(true, false, _, 115)) | Some(Input::Character('\u{13}')) => { // Ctrl + S
+            Some(Input::Special(ncurses::KEY_SAVE)) | Some(Input::Decomposed(true, false, _, 115)) => { // Ctrl + S
                 undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
                 match document.save_to(&file_name) {

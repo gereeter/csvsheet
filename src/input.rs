@@ -255,10 +255,10 @@ impl InputStream {
                 Input::Special(ncurses::KEY_SRIGHT) => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_RIGHT)),
                 Input::Special(code @ 566..=570)    => return Ok(make_input(code - 564, ncurses::KEY_RIGHT)),
                 Input::Special(ncurses::KEY_UP)     => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_UP)),
-                Input::Special(337)                 => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_UP)),
+                Input::Special(ncurses::KEY_SR)     => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_UP)),
                 Input::Special(code @ 572..=576)    => return Ok(make_input(code - 570, ncurses::KEY_UP)),
                 Input::Special(ncurses::KEY_DOWN)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_DOWN)),
-                Input::Special(336)                 => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DOWN)),
+                Input::Special(ncurses::KEY_SF)     => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DOWN)),
                 Input::Special(code @ 529..=533)    => return Ok(make_input(code - 527, ncurses::KEY_DOWN)),
                 Input::Special(ncurses::KEY_HOME)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_HOME)),
                 Input::Special(ncurses::KEY_SHOME)  => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_HOME)),
@@ -270,6 +270,10 @@ impl InputStream {
                 Input::Special(ncurses::KEY_SDC)    => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DC)),
                 Input::Special(code @ 523..=527)    => return Ok(make_input(code - 521, ncurses::KEY_DC)),
                 Input::Special(ncurses::KEY_BTAB)   => return Ok(Input::Decomposed(false, false, true, '\t' as i32)),
+                Input::Character(chr) if (chr as u32) < 27 && chr != '\t' && chr != '\n' && chr != '\u{8}'
+                    => return Ok(Input::Decomposed(true, false, false, chr as i32 + 96)),
+                Input::Character(chr) if (chr as u32) > 128 && (chr as u32) < 155 // TODO: Consider whitelist? Cancel is sometimes used for Backspace
+                    => return Ok(Input::Decomposed(true, true, false, chr as i32 - 32)),
                 _ => { }
             }
 
