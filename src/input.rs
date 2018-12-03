@@ -93,6 +93,13 @@ pub struct InputStream {
 
 }
 
+fn make_input(mode: i32, key: i32) -> Input {
+    let ctrl = mode & 0b100 != 0;
+    let alt = mode & 0b10 != 0;
+    let shift = mode & 0b1 != 0;
+    Input::Decomposed(ctrl, alt, shift, key)
+}
+
 impl InputStream {
     pub unsafe fn init(window: &mut Window) -> Self {
         window.set_keypad(true);
@@ -160,7 +167,7 @@ impl InputStream {
             let _ = define_if_necessary(const_cstr!("\x1b[1;7B").as_cstr(), 533); // Ctrl + Alt + Down
             let _ = define_if_necessary(const_cstr!("\x1b[1;7C").as_cstr(), 570); // Ctrl + Alt + Right
             let _ = define_if_necessary(const_cstr!("\x1b[1;7D").as_cstr(), 555); // Ctrl + Alt + Left
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7H").as_cstr(), 544); // Ctrl + Alt +  Home
+            let _ = define_if_necessary(const_cstr!("\x1b[1;7H").as_cstr(), 544); // Ctrl + Alt + Home
             let _ = define_if_necessary(const_cstr!("\x1b[1;7F").as_cstr(), 538); // Ctrl + Alt + End
 
             if curses::key_code_for(const_cstr!("\x1b[3~").as_cstr()) == Ok(ncurses::KEY_DC) &&
@@ -229,6 +236,43 @@ impl InputStream {
                 }
             }
 
+            // FIXME: It seems clear that the hardcoded constants here come simply from the order which things are in the terminfo file,
+            //   which is horribly unreliable and unportable. It also explains the overlap when it comes to Ctrl+Alt+Shift, since those
+            //   values are not in my terminfo file. There should be a more reliable method.
+            //
+            //   "The keyname function may return the names of user-defined string capabilities which are defined in the terminfo entry via
+            //    the -x option of tic. This implementation automatically assigns at run-time keycodes to user-defined strings which begin
+            //    with "k". The keycodes start at KEY_MAX, but are not guaranteed to be the same value for different runs because user-defined
+            //    codes are merged from all terminal descriptions which have been loaded. The use_extended_names(3X) function controls whether
+            //    this data is loaded when the terminal description is read by the library."
+            //
+            // Translate various known special keys to a decomposed form
+            match input {
+                Input::Special(ncurses::KEY_LEFT)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_LEFT)),
+                Input::Special(ncurses::KEY_SLEFT)  => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_LEFT)),
+                Input::Special(code @ 551..=555)    => return Ok(make_input(code - 549, ncurses::KEY_LEFT)),
+                Input::Special(ncurses::KEY_RIGHT)  => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_RIGHT)),
+                Input::Special(ncurses::KEY_SRIGHT) => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_RIGHT)),
+                Input::Special(code @ 566..=570)    => return Ok(make_input(code - 564, ncurses::KEY_RIGHT)),
+                Input::Special(ncurses::KEY_UP)     => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_UP)),
+                Input::Special(337)                 => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_UP)),
+                Input::Special(code @ 572..=576)    => return Ok(make_input(code - 570, ncurses::KEY_UP)),
+                Input::Special(ncurses::KEY_DOWN)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_DOWN)),
+                Input::Special(336)                 => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DOWN)),
+                Input::Special(code @ 529..=533)    => return Ok(make_input(code - 527, ncurses::KEY_DOWN)),
+                Input::Special(ncurses::KEY_HOME)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_HOME)),
+                Input::Special(ncurses::KEY_SHOME)  => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_HOME)),
+                Input::Special(code @ 540..=544)    => return Ok(make_input(code - 538, ncurses::KEY_HOME)),
+                Input::Special(ncurses::KEY_END)    => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_END)),
+                Input::Special(ncurses::KEY_SEND)   => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_END)),
+                Input::Special(code @ 534..=538)    => return Ok(make_input(code - 532, ncurses::KEY_END)),
+                Input::Special(ncurses::KEY_DC)     => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_DC)),
+                Input::Special(ncurses::KEY_SDC)    => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DC)),
+                Input::Special(code @ 523..=527)    => return Ok(make_input(code - 521, ncurses::KEY_DC)),
+                Input::Special(ncurses::KEY_BTAB)   => return Ok(Input::Decomposed(false, false, true, '\t' as i32)),
+                _ => { }
+            }
+
             // Handle XTerm's modifyOtherKeys extension, parsing manually
             if let Input::Special(2100) = input {
                 self.xterm_modify_key_state = XTermModifyKeyState::ParsingMode(0);
@@ -255,10 +299,7 @@ impl InputStream {
                         } else if chr == '~' {
                             self.xterm_modify_key_state = XTermModifyKeyState::Off;
                             if 1 <= mode {
-                                let ctrl = (mode - 1) & 0b100 != 0;
-                                let alt = (mode - 1) & 0b10 != 0;
-                                let shift = (mode - 1) & 0b1 != 0;
-                                return Ok(Input::Decomposed(ctrl, alt, shift, char_so_far));
+                                return Ok(make_input(mode as i32 - 1, char_so_far as i32));
                             } else {
                                 eprintln!("0 mode?");
                                 continue;
@@ -330,72 +371,22 @@ impl InputStream {
                     } else if let Input::Special(2201) = input {
                         self.kitty_full_mode_state = KittyFullModeState::Off;
                         if let KeyType::Press | KeyType::Repeat = key_type {
-                            let ctrl = mode & 0b100 != 0;
-                            let alt = mode & 0b10 != 0;
-                            let shift = mode & 0b1 != 0;
+                            let mode = mode as i32;
                             // FIXME: more complete translation, unify different input types
-                            if 18 <= key_so_far && key_so_far <= 43 {
-                                return Ok(Input::Decomposed(ctrl, alt, shift, 'a' as u32 + key_so_far - 18));
-                            } else if key_so_far == 56 { // Right
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_RIGHT));
-                                } else {
-                                    return Ok(Input::Special(564 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 57 { // Left
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_LEFT));
-                                } else {
-                                    return Ok(Input::Special(549 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 58 { // Down
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_DOWN));
-                                } else {
-                                    return Ok(Input::Special(527 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 59 { // Up
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_UP));
-                                } else {
-                                    return Ok(Input::Special(570 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 60 { // PageUp
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_PPAGE));
-                                } else {
-                                    return Ok(Input::Special(559 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 61 { // PageDown
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_NPAGE));
-                                } else {
-                                    return Ok(Input::Special(554 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 62 { // Home
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_HOME));
-                                } else {
-                                    return Ok(Input::Special(538 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 63 { // End
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_END));
-                                } else {
-                                    return Ok(Input::Special(532 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 55 { // Delete
-                                if !ctrl && !alt {
-                                    return Ok(Input::Special(ncurses::KEY_DC));
-                                } else {
-                                    return Ok(Input::Special(521 + (mode & 0b111) as i32));
-                                }
-                            } else if key_so_far == 50 { // Escape
-                                return Ok(Input::Character('\u{1b}'));
-                            } else if key_so_far == 69 { // F1
-                                return Ok(Input::Special(ncurses::KEY_F1));
-                            } else {
-                                return Ok(Input::Decomposed(ctrl, alt, shift, key_so_far));
+                            match key_so_far {
+                                18..=43 => return Ok(make_input(mode, 'a' as i32 + key_so_far as i32 - 18)),
+                                55 => return Ok(make_input(mode, ncurses::KEY_DC)),
+                                56 => return Ok(make_input(mode, ncurses::KEY_RIGHT)),
+                                57 => return Ok(make_input(mode, ncurses::KEY_LEFT)),
+                                58 => return Ok(make_input(mode, ncurses::KEY_DOWN)),
+                                59 => return Ok(make_input(mode, ncurses::KEY_UP)),
+                                60 => return Ok(make_input(mode, ncurses::KEY_PPAGE)),
+                                61 => return Ok(make_input(mode, ncurses::KEY_NPAGE)),
+                                62 => return Ok(make_input(mode, ncurses::KEY_HOME)),
+                                63 => return Ok(make_input(mode, ncurses::KEY_END)),
+                                50 => return Ok(Input::Character('\u{1b}')), // Escape
+                                69 => return Ok(Input::Special(ncurses::KEY_F1)),
+                                _ => return Ok(make_input(mode, key_so_far as i32 + 600))
                             }
                         } else {
                             continue;

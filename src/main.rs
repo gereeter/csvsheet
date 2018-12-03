@@ -665,35 +665,35 @@ enum Skip {
 fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>(input: Option<Input>, text: &'a ShapedString, position: &mut TextPosition, navigate: F) -> bool {
     // Parse the keystroke into its meaning. If we can do the action within the cell, do it and immediately return.
     let (direction, skip) = match input {
-        Some(Input::Special(ncurses::KEY_LEFT)) if !text.at_beginning(position) => {
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_LEFT)) if !text.at_beginning(position) => {
             text.move_left(position);
             return false;
         },
-        Some(Input::Special(ncurses::KEY_HOME)) if !text.at_beginning(position) => {
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_HOME)) if !text.at_beginning(position) => {
             *position = TextPosition::beginning();
             return false;
         },
-        Some(Input::Special(ncurses::KEY_LEFT)) | Some(Input::Special(553)) => (Direction::Left, Skip::One), // Ctrl + Left
-        Some(Input::Special(ncurses::KEY_HOME))                             => (Direction::Left, Skip::All),
+        Some(Input::Decomposed(_, false, _, ncurses::KEY_LEFT)) => (Direction::Left, Skip::One), // [Ctrl +] Left
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_HOME)) => (Direction::Left, Skip::All),
 
-        Some(Input::Special(ncurses::KEY_RIGHT)) if !text.at_end(position) => {
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_RIGHT)) if !text.at_end(position) => {
             text.move_right(position);
             return false;
         },
-        Some(Input::Special(ncurses::KEY_END)) if !text.at_end(position) => {
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_END)) if !text.at_end(position) => {
             *position = TextPosition::end(text);
             return false;
         },
-        Some(Input::Special(ncurses::KEY_RIGHT)) | Some(Input::Special(568)) => (Direction::Right, Skip::One), // [Ctrl +] Right
-        Some(Input::Special(ncurses::KEY_END))                               => (Direction::Right, Skip::All),
+        Some(Input::Decomposed(_, false, _, ncurses::KEY_RIGHT)) => (Direction::Right, Skip::One), // [Ctrl +] Right
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_END))   => (Direction::Right, Skip::All),
 
-        Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(574)) => (Direction::Up, Skip::One), // [Ctrl +] Up
-        Some(Input::Special(ncurses::KEY_PPAGE))                          => (Direction::Up, Skip::Many), // PageUp
-        Some(Input::Special(542))                                         => (Direction::Up, Skip::All), // Ctrl + Home
+        Some(Input::Decomposed(_, false, _, ncurses::KEY_UP))        => (Direction::Up, Skip::One), // [Ctrl +] Up
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_PPAGE)) => (Direction::Up, Skip::Many), // PageUp
+        Some(Input::Decomposed(true, false, _, ncurses::KEY_HOME))   => (Direction::Up, Skip::All), // Ctrl + Home
 
-        Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(531)) => (Direction::Down, Skip::One), // [Ctrl +] Down
-        Some(Input::Special(ncurses::KEY_NPAGE))                            => (Direction::Down, Skip::Many), // PageDown
-        Some(Input::Special(536))                                           => (Direction::Down, Skip::All), // Ctrl + End
+        Some(Input::Decomposed(_, false, _, ncurses::KEY_DOWN))      => (Direction::Down, Skip::One), // [Ctrl +] Down
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_NPAGE)) => (Direction::Down, Skip::Many), // PageDown
+        Some(Input::Decomposed(true, false, _, ncurses::KEY_END))    => (Direction::Down, Skip::All), // Ctrl + End
 
         _ => {
             return false
@@ -907,10 +907,10 @@ fn main() {
                 Some(Input::Character(c)) if !c.is_control() => {
                     undo_state.prepare_edit(Some(EditType::Insert), &document, &cursor);
                 },
-                Some(Input::Special(ncurses::KEY_LEFT)) | Some(Input::Special(553)) | Some(Input::Special(ncurses::KEY_HOME)) |
-                Some(Input::Special(ncurses::KEY_RIGHT)) | Some(Input::Special(568)) | Some(Input::Special(ncurses::KEY_END)) |
-                Some(Input::Special(ncurses::KEY_UP)) | Some(Input::Special(ncurses::KEY_PPAGE)) | Some(Input::Special(542)) |
-                Some(Input::Special(ncurses::KEY_DOWN)) | Some(Input::Special(ncurses::KEY_NPAGE)) | Some(Input::Special(536)) => {
+                Some(Input::Decomposed(_, _, _, ncurses::KEY_LEFT)) | Some(Input::Decomposed(_, _, _, ncurses::KEY_RIGHT)) |
+                Some(Input::Decomposed(_, _, _, ncurses::KEY_UP)) | Some(Input::Decomposed(_, _, _, ncurses::KEY_DOWN)) |
+                Some(Input::Decomposed(_, _, _, ncurses::KEY_HOME)) | Some(Input::Decomposed(_, _, _, ncurses::KEY_END)) |
+                Some(Input::Decomposed(_, _, _, ncurses::KEY_PPAGE)) | Some(Input::Decomposed(_, _, _, ncurses::KEY_NPAGE)) => {
                     undo_state.prepare_edit(None, &document, &cursor);
                 },
                 _ => { }
@@ -1213,7 +1213,7 @@ fn main() {
                 }
             },
             // ------------------------------------------ Navigation ----------------------------------------------
-            Some(Input::Special(551)) | Some(Input::Special(555)) => { // [Ctrl +] Alt + Left
+            Some(Input::Decomposed(_, true, _, ncurses::KEY_LEFT)) => { // [Ctrl +] Alt + Left
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id]);
@@ -1225,7 +1225,7 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::Special(566)) | Some(Input::Special(570)) => { // [Ctrl +] Alt + Right
+            Some(Input::Decomposed(_, true, _, ncurses::KEY_RIGHT)) => { // [Ctrl +] Alt + Right
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -1239,7 +1239,7 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(Input::Special(572)) | Some(Input::Special(576)) => { // [Ctrl +] Alt + Up
+            Some(Input::Decomposed(_, true, _, ncurses::KEY_UP)) => { // [Ctrl +] Alt + Up
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id]);
@@ -1251,7 +1251,7 @@ fn main() {
                 get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
-            Some(Input::Special(529)) | Some(Input::Special(533)) => { // [Ctrl +] Alt + Down
+            Some(Input::Decomposed(_, true, _,  ncurses::KEY_DOWN)) => { // [Ctrl +] Alt + Down
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
@@ -1264,7 +1264,7 @@ fn main() {
                 get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
-            Some(Input::Special(525)) => { // Ctrl + Delete
+            Some(Input::Decomposed(true, false, _, ncurses::KEY_DC)) => { // Ctrl + Delete
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let current_col_id = document.views.top().cols[cursor.col_index];
