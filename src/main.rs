@@ -815,7 +815,7 @@ fn main() {
             None
         };
 
-        let input = input_stream.get(&mut window);
+        let input = input_stream.get(&mut window).ok();
 
         if let Some(Input::Special(ncurses::KEY_RESIZE)) = input {
             let (new_height, new_width) = window.get_max_yx();

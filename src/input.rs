@@ -194,12 +194,12 @@ impl InputStream {
         }
     }
 
-    pub fn get(&mut self, window: &mut Window) -> Option<Input> {
+    pub fn get(&mut self, window: &mut Window) -> Result<Input, ()> {
         loop {
-            let mut input = window.get_ch().ok();
+            let mut input = window.get_ch()?;
 
             // We need to parse utf8.
-            if let Some(Input::Byte(byte)) = input {
+            if let Input::Byte(byte) = input {
                 if self.utf8_bytes_left == 0 {
                     // New character
                     if byte >> 7 == 0b0 {
@@ -223,21 +223,21 @@ impl InputStream {
                     self.in_progress_codepoint = (self.in_progress_codepoint << 6) | ((byte & 0x3f) as u32);
                 }
                 if self.utf8_bytes_left == 0 {
-                    input = Some(Input::Character(std::char::from_u32(self.in_progress_codepoint).expect("BUG: Bad char cast")));
+                    input = Input::Character(std::char::from_u32(self.in_progress_codepoint).expect("BUG: Bad char cast"));
                 } else {
                     continue;
                 }
             }
 
             // Handle XTerm's modifyOtherKeys extension, parsing manually
-            if let Some(Input::Special(2100)) = input {
+            if let Input::Special(2100) = input {
                 self.xterm_modify_key_state = XTermModifyKeyState::ParsingMode(0);
                 continue;
             }
             match self.xterm_modify_key_state {
                 XTermModifyKeyState::Off => { },
                 XTermModifyKeyState::ParsingMode(mode_so_far) => {
-                    if let Some(Input::Character(chr)) = input {
+                    if let Input::Character(chr) = input {
                         if let Some(digit) = chr.to_digit(10) {
                             self.xterm_modify_key_state = XTermModifyKeyState::ParsingMode(mode_so_far * 10 + digit);
                             continue;
@@ -248,7 +248,7 @@ impl InputStream {
                     }
                 },
                 XTermModifyKeyState::ParsingChar(mode, char_so_far) => {
-                    if let Some(Input::Character(chr)) = input {
+                    if let Input::Character(chr) = input {
                         if let Some(digit) = chr.to_digit(10) {
                             self.xterm_modify_key_state = XTermModifyKeyState::ParsingChar(mode, char_so_far * 10 + digit);
                             continue;
@@ -258,7 +258,7 @@ impl InputStream {
                                 let ctrl = (mode - 1) & 0b100 != 0;
                                 let alt = (mode - 1) & 0b10 != 0;
                                 let shift = (mode - 1) & 0b1 != 0;
-                                return Some(Input::Decomposed(ctrl, alt, shift, char_so_far));
+                                return Ok(Input::Decomposed(ctrl, alt, shift, char_so_far));
                             } else {
                                 eprintln!("0 mode?");
                                 continue;
@@ -269,29 +269,29 @@ impl InputStream {
             }
 
             // Handle Kitty's full mode extension, parsing manually
-            if let Some(Input::Special(2200)) = input {
+            if let Input::Special(2200) = input {
                 self.kitty_full_mode_state = KittyFullModeState::ParsingType;
                 continue;
             }
             match self.kitty_full_mode_state {
                 KittyFullModeState::Off => { },
                 KittyFullModeState::ParsingType => match input {
-                    Some(Input::Character('p')) => {
+                    Input::Character('p') => {
                         self.kitty_full_mode_state = KittyFullModeState::ParsingModifiers(KeyType::Press);
                         continue;
                     },
-                    Some(Input::Character('r')) => {
+                    Input::Character('r') => {
                         self.kitty_full_mode_state = KittyFullModeState::ParsingModifiers(KeyType::Release);
                         continue;
                     },
-                    Some(Input::Character('t')) => {
+                    Input::Character('t') => {
                         self.kitty_full_mode_state = KittyFullModeState::ParsingModifiers(KeyType::Repeat);
                         continue;
                     },
                     _ => { }
                 },
                 KittyFullModeState::ParsingModifiers(key_type) => {
-                    if let Some(Input::Character(chr)) = input {
+                    if let Input::Character(chr) = input {
                         // Decode base 64
                         let decoded = if 'A' <= chr && chr <= 'Z' {
                             Some(chr as u32 - 'A' as u32)
@@ -313,7 +313,7 @@ impl InputStream {
                     }
                 },
                 KittyFullModeState::ParsingKey(key_type, mode, key_so_far) => {
-                    if let Some(Input::Character(chr)) = input {
+                    if let Input::Character(chr) = input {
                         let decoded = if 'A' <= chr && chr <= 'Z' {
                             Some(chr as u32 - 'A' as u32)
                         } else if 'a' <= chr && chr <= 'z' {
@@ -327,7 +327,7 @@ impl InputStream {
                             self.kitty_full_mode_state = KittyFullModeState::ParsingKey(key_type, mode, key_so_far * 85 + value);
                             continue;
                         }
-                    } else if let Some(Input::Special(2201)) = input {
+                    } else if let Input::Special(2201) = input {
                         self.kitty_full_mode_state = KittyFullModeState::Off;
                         if let KeyType::Press | KeyType::Repeat = key_type {
                             let ctrl = mode & 0b100 != 0;
@@ -335,67 +335,67 @@ impl InputStream {
                             let shift = mode & 0b1 != 0;
                             // FIXME: more complete translation, unify different input types
                             if 18 <= key_so_far && key_so_far <= 43 {
-                                return Some(Input::Decomposed(ctrl, alt, shift, 'a' as u32 + key_so_far - 18));
+                                return Ok(Input::Decomposed(ctrl, alt, shift, 'a' as u32 + key_so_far - 18));
                             } else if key_so_far == 56 { // Right
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_RIGHT));
+                                    return Ok(Input::Special(ncurses::KEY_RIGHT));
                                 } else {
-                                    return Some(Input::Special(564 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(564 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 57 { // Left
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_LEFT));
+                                    return Ok(Input::Special(ncurses::KEY_LEFT));
                                 } else {
-                                    return Some(Input::Special(549 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(549 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 58 { // Down
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_DOWN));
+                                    return Ok(Input::Special(ncurses::KEY_DOWN));
                                 } else {
-                                    return Some(Input::Special(527 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(527 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 59 { // Up
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_UP));
+                                    return Ok(Input::Special(ncurses::KEY_UP));
                                 } else {
-                                    return Some(Input::Special(570 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(570 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 60 { // PageUp
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_PPAGE));
+                                    return Ok(Input::Special(ncurses::KEY_PPAGE));
                                 } else {
-                                    return Some(Input::Special(559 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(559 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 61 { // PageDown
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_NPAGE));
+                                    return Ok(Input::Special(ncurses::KEY_NPAGE));
                                 } else {
-                                    return Some(Input::Special(554 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(554 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 62 { // Home
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_HOME));
+                                    return Ok(Input::Special(ncurses::KEY_HOME));
                                 } else {
-                                    return Some(Input::Special(538 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(538 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 63 { // End
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_END));
+                                    return Ok(Input::Special(ncurses::KEY_END));
                                 } else {
-                                    return Some(Input::Special(532 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(532 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 55 { // Delete
                                 if !ctrl && !alt {
-                                    return Some(Input::Special(ncurses::KEY_DC));
+                                    return Ok(Input::Special(ncurses::KEY_DC));
                                 } else {
-                                    return Some(Input::Special(521 + (mode & 0b111) as i32));
+                                    return Ok(Input::Special(521 + (mode & 0b111) as i32));
                                 }
                             } else if key_so_far == 50 { // Escape
-                                return Some(Input::Character('\u{1b}'));
+                                return Ok(Input::Character('\u{1b}'));
                             } else if key_so_far == 69 { // F1
-                                return Some(Input::Special(ncurses::KEY_F1));
+                                return Ok(Input::Special(ncurses::KEY_F1));
                             } else {
-                                return Some(Input::Decomposed(ctrl, alt, shift, key_so_far));
+                                return Ok(Input::Decomposed(ctrl, alt, shift, key_so_far));
                             }
                         } else {
                             continue;
@@ -404,7 +404,7 @@ impl InputStream {
                 }
             }
 
-            return input;
+            return Ok(input);
         }
     }
 }
