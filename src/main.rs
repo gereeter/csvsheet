@@ -1,4 +1,4 @@
-#![feature(nll)] // TODO: consider stabilization?
+#![feature(nll, if_while_or_patterns)] // TODO: consider stabilization?
 // nll is jusr convenience
 
 extern crate ncurses;
@@ -610,13 +610,6 @@ fn get_cell<'a>(document: &'a Document, cursor: &Cursor) -> &'a ShapedString {
     &document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]]
 }
 
-fn debug_print(window: &mut Window, message: &str) {
-    let (height, width) = window.get_max_yx();
-    let (y, x) = window.get_cur_yx();
-    window.mv_add_str(height - 1, width.saturating_sub(message.len() as i32), message);
-    window.mv(y, x);
-}
-
 enum Mode {
     Normal,
     Filter {
@@ -776,6 +769,37 @@ enum XTermModifyKeyState {
     ParsingChar(u32, u32)
 }
 
+struct KittyFullMode {
+    _priv: ()
+}
+
+impl Drop for KittyFullMode {
+    fn drop(&mut self) {
+        let _ = write_now(b"\x1b[?2017l");
+    }
+}
+
+impl KittyFullMode {
+    fn start() -> Option<KittyFullMode> {
+        write_now(b"\x1b[?2017h").ok()?;
+        Some(KittyFullMode { _priv: () })
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum KeyType {
+    Press,
+    Release,
+    Repeat
+}
+
+enum KittyFullModeState {
+    Off,
+    ParsingType,
+    ParsingModifiers(KeyType),
+    ParsingKey(KeyType, u32, u32)
+}
+
 fn main() {
     let arg_matches = clap::App::new("CSVsheet")
                                     .version("0.1")
@@ -859,6 +883,14 @@ fn main() {
         None
     };
 
+    // TODO: Should we query support first?
+    let _kitty_full_mode_guard = if unsafe { curses::define_key_code(const_cstr!("\x1b_K").as_cstr(), 2200) }.is_ok() &&
+                                    unsafe { curses::define_key_code(const_cstr!("\x1b\\").as_cstr(), 2201) }.is_ok() {
+        KittyFullMode::start()
+    } else {
+        None
+    };
+
     // We use Esc heavily and modern computers are quite fast, so unless the user has overridden it directly,
     // set ESCDELAY to a small 25ms. The normal default of 1 second is too high.
     if std::env::var_os("ESCDELAY").is_none() {
@@ -936,6 +968,7 @@ fn main() {
     let mut in_progress_codepoint = 0;
     let mut utf8_bytes_left = 0;
     let mut xterm_modify_key_state = XTermModifyKeyState::Off;
+    let mut kitty_full_mode_state = KittyFullModeState::Off;
 
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
@@ -980,13 +1013,14 @@ fn main() {
                 utf8_bytes_left -= 1;
                 in_progress_codepoint = (in_progress_codepoint << 6) | ((byte & 0x3f) as u32);
             }
-            debug_print(&mut window, &format!("> Got byte {:x}, in progress codepoint = {:x}", byte, in_progress_codepoint));
             if utf8_bytes_left == 0 {
                 input = Some(Input::Character(std::char::from_u32(in_progress_codepoint).expect("BUG: Bad char cast")));
             } else {
                 input = None;
             }
         }
+
+        eprintln!("Input: {:?}", input);
 
         // Handle XTerm's modifyOtherKeys extension, parsing manually
         if let Some(Input::Special(2100)) = input {
@@ -1021,6 +1055,145 @@ fn main() {
                             eprintln!("0 mode?");
                             input = None;
                         }
+                    }
+                }
+            }
+        }
+
+        // Handle Kitty's full mode extension, parsing manually
+        if let Some(Input::Special(2200)) = input {
+            kitty_full_mode_state = KittyFullModeState::ParsingType;
+            continue;
+        }
+        match kitty_full_mode_state {
+            KittyFullModeState::Off => { },
+            KittyFullModeState::ParsingType => match input {
+                Some(Input::Character('p')) => {
+                    kitty_full_mode_state = KittyFullModeState::ParsingModifiers(KeyType::Press);
+                    continue;
+                },
+                Some(Input::Character('r')) => {
+                    kitty_full_mode_state = KittyFullModeState::ParsingModifiers(KeyType::Release);
+                    continue;
+                },
+                Some(Input::Character('t')) => {
+                    kitty_full_mode_state = KittyFullModeState::ParsingModifiers(KeyType::Repeat);
+                    continue;
+                },
+                _ => { }
+            },
+            KittyFullModeState::ParsingModifiers(key_type) => {
+                eprintln!("Parsing modifiers: {:?}", input);
+                if let Some(Input::Character(chr)) = input {
+                    // Decode base 64
+                    let decoded = if 'A' <= chr && chr <= 'Z' {
+                        Some(chr as u32 - 'A' as u32)
+                    } else if 'a' <= chr && chr <= 'z' {
+                        Some(chr as u32 - 'a' as u32 + 26)
+                    } else if '0' <= chr && chr <= '9' {
+                        Some(chr as u32 - '0' as u32 + 52)
+                    } else if chr == '+' {
+                        Some(62)
+                    } else if chr == '/' {
+                        Some(63)
+                    } else {
+                        None
+                    };
+                    if let Some(mode) = decoded {
+                        kitty_full_mode_state = KittyFullModeState::ParsingKey(key_type, mode, 0);
+                        continue;
+                    }
+                }
+            },
+            KittyFullModeState::ParsingKey(key_type, mode, key_so_far) => {
+                eprintln!("Parsing key: {:?}", input);
+                if let Some(Input::Character(chr)) = input {
+                    let decoded = if 'A' <= chr && chr <= 'Z' {
+                        Some(chr as u32 - 'A' as u32)
+                    } else if 'a' <= chr && chr <= 'z' {
+                        Some(chr as u32 - 'a' as u32 + 26)
+                    } else if '0' <= chr && chr <= '9' {
+                        Some(chr as u32 - '0' as u32 + 52)
+                    } else {
+                        ".-:+=^!/*?&<>()[]{}@%$#".chars().position(|c| c == chr).map(|i| i as u32 + 62)
+                    };
+                    if let Some(value) = decoded {
+                        kitty_full_mode_state = KittyFullModeState::ParsingKey(key_type, mode, key_so_far * 85 + value);
+                        continue;
+                    }
+                } else if let Some(Input::Special(2201)) = input {
+                    if let KeyType::Press | KeyType::Repeat = key_type {
+                        let ctrl = mode & 0b100 != 0;
+                        let alt = mode & 0b10 != 0;
+                        let shift = mode & 0b1 != 0;
+                        // FIXME: more complete translation, unify different input types
+                        if 18 <= key_so_far && key_so_far <= 43 {
+                            input = Some(Input::Decomposed(ctrl, alt, shift, 'a' as u32 + key_so_far - 18));
+                        } else if key_so_far == 56 { // Right
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_RIGHT));
+                            } else {
+                                input = Some(Input::Special(564 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 57 { // Left
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_LEFT));
+                            } else {
+                                input = Some(Input::Special(549 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 58 { // Down
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_DOWN));
+                            } else {
+                                input = Some(Input::Special(527 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 59 { // Up
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_UP));
+                            } else {
+                                input = Some(Input::Special(570 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 60 { // PageUp
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_PPAGE));
+                            } else {
+                                input = Some(Input::Special(559 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 61 { // PageDown
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_NPAGE));
+                            } else {
+                                input = Some(Input::Special(554 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 62 { // Home
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_HOME));
+                            } else {
+                                input = Some(Input::Special(538 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 63 { // End
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_END));
+                            } else {
+                                input = Some(Input::Special(532 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 55 { // Delete
+                            if !ctrl && !alt {
+                                input = Some(Input::Special(ncurses::KEY_DC));
+                            } else {
+                                input = Some(Input::Special(521 + (mode & 0b111) as i32));
+                            }
+                        } else if key_so_far == 50 { // Escape
+                            input = Some(Input::Character('\u{1b}'));
+                        } else if key_so_far == 69 { // F1
+                            input = Some(Input::Special(ncurses::KEY_F1));
+                        } else {
+                            input = Some(Input::Decomposed(ctrl, alt, shift, key_so_far));
+                        }
+                        kitty_full_mode_state = KittyFullModeState::Off;
+                    } else {
+                        kitty_full_mode_state = KittyFullModeState::Off;
+                        continue;
                     }
                 }
             }
@@ -1550,10 +1723,6 @@ fn main() {
                 }
             },
             // ------------------------------------- Fallback/Debugging ------------------------------------
-            Some(input) => {
-                // TODO: just debugging, remove this
-                debug_print(&mut window, &format!("> {:?}", input));
-            },
             _ => { }
         } },
             Mode::Quitting => match input {
