@@ -127,6 +127,19 @@ extern "C" {
     fn define_key(definition: *const c_char, code: c_int) -> c_int;
 }
 
+extern "C" {
+    fn tigetstr(name: *const c_char) -> *const c_char;
+}
+
+pub fn get_terminfo_string(name: &CStr) -> Option<&'static CStr> {
+    let out = unsafe { tigetstr(name.as_ptr()) };
+    if out.is_null() || out as isize == -1 {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(out) })
+    }
+}
+
 #[cfg(feature = "ncurses-ext")]
 pub fn key_code_for(definition: &CStr) -> Result<c_int, KeyError> {
     let ret = unsafe { key_defined(definition.as_ptr()) };

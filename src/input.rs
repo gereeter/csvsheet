@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use const_cstr::ConstCStr;
+
 use curses::{self, Window, Input};
 
 fn write_now(data: &[u8]) -> Result<(), std::io::Error> {
@@ -85,6 +87,8 @@ pub struct InputStream {
     _bracketed_paste: Option<BracketedPaste>,
     _xterm_modify_keys: Option<XTermModifyOtherKeys>,
     _kitty_full_mode: Option<KittyFullMode>,
+
+    extra_bound_keys: Vec<(i32, Input)>,
     
     in_progress_codepoint: u32,
     utf8_bytes_left: usize,
@@ -93,12 +97,82 @@ pub struct InputStream {
 
 }
 
-fn make_input(mode: i32, key: i32) -> Input {
-    let ctrl = mode & 0b100 != 0;
-    let alt = mode & 0b10 != 0;
-    let shift = mode & 0b1 != 0;
-    Input::Decomposed(ctrl, alt, shift, key)
+const fn make_input(mode: i32, key: i32) -> Input {
+    Input::Decomposed(mode & 0b100 != 0, mode & 0b10 != 0, mode & 0b1 != 0, key)
 }
+
+unsafe fn define_if_necessary(def: &std::ffi::CStr, code: std::os::raw::c_int) -> Result<(), ()> {
+    if curses::key_code_for(def) == Err(curses::KeyError::NotDefined) {
+        curses::define_key_code(def, code)
+    } else {
+        Ok(())
+    }
+}
+
+const KNOWN_EXTRA_TERM_CAPABILITIES: &'static [(ConstCStr, Input)] = &[
+    (const_cstr!("kDC3"), make_input(2, ncurses::KEY_DC)),
+    (const_cstr!("kDC4"), make_input(3, ncurses::KEY_DC)),
+    (const_cstr!("kDC5"), make_input(4, ncurses::KEY_DC)),
+    (const_cstr!("kDC6"), make_input(5, ncurses::KEY_DC)),
+    (const_cstr!("kDC7"), make_input(6, ncurses::KEY_DC)),
+    (const_cstr!("kDC8"), make_input(7, ncurses::KEY_DC)),
+
+    (const_cstr!("kLFT3"), make_input(2, ncurses::KEY_LEFT)),
+    (const_cstr!("kLFT4"), make_input(3, ncurses::KEY_LEFT)),
+    (const_cstr!("kLFT5"), make_input(4, ncurses::KEY_LEFT)),
+    (const_cstr!("kLFT6"), make_input(5, ncurses::KEY_LEFT)),
+    (const_cstr!("kLFT7"), make_input(6, ncurses::KEY_LEFT)),
+    (const_cstr!("kLFT8"), make_input(7, ncurses::KEY_LEFT)),
+
+    (const_cstr!("kRIT3"), make_input(2, ncurses::KEY_RIGHT)),
+    (const_cstr!("kRIT4"), make_input(3, ncurses::KEY_RIGHT)),
+    (const_cstr!("kRIT5"), make_input(4, ncurses::KEY_RIGHT)),
+    (const_cstr!("kRIT6"), make_input(5, ncurses::KEY_RIGHT)),
+    (const_cstr!("kRIT7"), make_input(6, ncurses::KEY_RIGHT)),
+    (const_cstr!("kRIT8"), make_input(7, ncurses::KEY_RIGHT)),
+
+    (const_cstr!("kUP3"), make_input(2, ncurses::KEY_UP)),
+    (const_cstr!("kUP4"), make_input(3, ncurses::KEY_UP)),
+    (const_cstr!("kUP5"), make_input(4, ncurses::KEY_UP)),
+    (const_cstr!("kUP6"), make_input(5, ncurses::KEY_UP)),
+    (const_cstr!("kUP7"), make_input(6, ncurses::KEY_UP)),
+    (const_cstr!("kUP8"), make_input(7, ncurses::KEY_UP)),
+
+    (const_cstr!("kDN3"), make_input(2, ncurses::KEY_DOWN)),
+    (const_cstr!("kDN4"), make_input(3, ncurses::KEY_DOWN)),
+    (const_cstr!("kDN5"), make_input(4, ncurses::KEY_DOWN)),
+    (const_cstr!("kDN6"), make_input(5, ncurses::KEY_DOWN)),
+    (const_cstr!("kDN7"), make_input(6, ncurses::KEY_DOWN)),
+    (const_cstr!("kDN8"), make_input(7, ncurses::KEY_DOWN)),
+
+    (const_cstr!("kHOM3"), make_input(2, ncurses::KEY_HOME)),
+    (const_cstr!("kHOM4"), make_input(3, ncurses::KEY_HOME)),
+    (const_cstr!("kHOM5"), make_input(4, ncurses::KEY_HOME)),
+    (const_cstr!("kHOM6"), make_input(5, ncurses::KEY_HOME)),
+    (const_cstr!("kHOM7"), make_input(6, ncurses::KEY_HOME)),
+    (const_cstr!("kHOM8"), make_input(7, ncurses::KEY_HOME)),
+
+    (const_cstr!("kEND3"), make_input(2, ncurses::KEY_END)),
+    (const_cstr!("kEND4"), make_input(3, ncurses::KEY_END)),
+    (const_cstr!("kEND5"), make_input(4, ncurses::KEY_END)),
+    (const_cstr!("kEND6"), make_input(5, ncurses::KEY_END)),
+    (const_cstr!("kEND7"), make_input(6, ncurses::KEY_END)),
+    (const_cstr!("kEND8"), make_input(7, ncurses::KEY_END)),
+
+    (const_cstr!("kPRV3"), make_input(2, ncurses::KEY_PPAGE)),
+    (const_cstr!("kPRV4"), make_input(3, ncurses::KEY_PPAGE)),
+    (const_cstr!("kPRV5"), make_input(4, ncurses::KEY_PPAGE)),
+    (const_cstr!("kPRV6"), make_input(5, ncurses::KEY_PPAGE)),
+    (const_cstr!("kPRV7"), make_input(6, ncurses::KEY_PPAGE)),
+    (const_cstr!("kPRV8"), make_input(7, ncurses::KEY_PPAGE)),
+
+    (const_cstr!("kNXT3"), make_input(2, ncurses::KEY_NPAGE)),
+    (const_cstr!("kNXT4"), make_input(3, ncurses::KEY_NPAGE)),
+    (const_cstr!("kNXT5"), make_input(4, ncurses::KEY_NPAGE)),
+    (const_cstr!("kNXT6"), make_input(5, ncurses::KEY_NPAGE)),
+    (const_cstr!("kNXT7"), make_input(6, ncurses::KEY_NPAGE)),
+    (const_cstr!("kNXT8"), make_input(7, ncurses::KEY_NPAGE)),
+];
 
 impl InputStream {
     pub unsafe fn init(window: &mut Window) -> Self {
@@ -138,17 +212,19 @@ impl InputStream {
             ncurses::set_escdelay(25);
         }
 
+        let mut extra_bound_keys = Vec::new();
+        for &(name, inp) in KNOWN_EXTRA_TERM_CAPABILITIES {
+            if let Some(description) = curses::get_terminfo_string(name.as_cstr()) {
+                if let Ok(code) = curses::key_code_for(description) {
+                    extra_bound_keys.push((code, inp));
+                }
+            }
+        }
+
+/*
         // Hackily detect if our terminal is using XTerm-style codes and add the rest if necessary
         if curses::key_code_for(const_cstr!("\x1b[1;2D").as_cstr()) == Ok(ncurses::KEY_SLEFT) &&
            curses::key_code_for(const_cstr!("\x1b[1;2C").as_cstr()) == Ok(ncurses::KEY_SRIGHT) {
-            unsafe fn define_if_necessary(def: &std::ffi::CStr, code: std::os::raw::c_int) -> Result<(), ()> {
-                if curses::key_code_for(def) == Err(curses::KeyError::NotDefined) {
-                    curses::define_key_code(def, code)
-                } else {
-                    Ok(())
-                }
-            }
-
             let _ = define_if_necessary(const_cstr!("\x1b[1;5A").as_cstr(), 574); // Ctrl + Up
             let _ = define_if_necessary(const_cstr!("\x1b[1;5B").as_cstr(), 531); // Ctrl + Down
             let _ = define_if_necessary(const_cstr!("\x1b[1;5C").as_cstr(), 568); // Ctrl + Right
@@ -186,6 +262,7 @@ impl InputStream {
                 let _ = define_if_necessary(const_cstr!("\x1b[6;7~").as_cstr(), 560); // Ctrl + Alt + PageDown
             }
         }
+*/
 
         ncurses::ungetch(ncurses::KEY_RESIZE);
 
@@ -193,6 +270,8 @@ impl InputStream {
             _bracketed_paste: bracketed_paste_guard,
             _xterm_modify_keys: xterm_modify_other_keys_guard,
             _kitty_full_mode: kitty_full_mode_guard,
+
+            extra_bound_keys: extra_bound_keys,
 
             in_progress_codepoint: 0,
             utf8_bytes_left: 0,
@@ -236,39 +315,33 @@ impl InputStream {
                 }
             }
 
-            // FIXME: It seems clear that the hardcoded constants here come simply from the order which things are in the terminfo file,
-            //   which is horribly unreliable and unportable. It also explains the overlap when it comes to Ctrl+Alt+Shift, since those
-            //   values are not in my terminfo file. There should be a more reliable method.
-            //
-            //   "The keyname function may return the names of user-defined string capabilities which are defined in the terminfo entry via
-            //    the -x option of tic. This implementation automatically assigns at run-time keycodes to user-defined strings which begin
-            //    with "k". The keycodes start at KEY_MAX, but are not guaranteed to be the same value for different runs because user-defined
-            //    codes are merged from all terminal descriptions which have been loaded. The use_extended_names(3X) function controls whether
-            //    this data is loaded when the terminal description is read by the library."
-            //
+            // Translate keys bound to non-standard terminfo entries
+            if let Input::Special(code) = input {
+                for &(possible_code, possible_inp) in &self.extra_bound_keys {
+                    if possible_code == code {
+                        return Ok(possible_inp);
+                    }
+                }
+            }
+
             // Translate various known special keys to a decomposed form
             match input {
                 Input::Special(ncurses::KEY_LEFT)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_LEFT)),
                 Input::Special(ncurses::KEY_SLEFT)  => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_LEFT)),
-                Input::Special(code @ 551..=555)    => return Ok(make_input(code - 549, ncurses::KEY_LEFT)),
                 Input::Special(ncurses::KEY_RIGHT)  => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_RIGHT)),
                 Input::Special(ncurses::KEY_SRIGHT) => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_RIGHT)),
-                Input::Special(code @ 566..=570)    => return Ok(make_input(code - 564, ncurses::KEY_RIGHT)),
                 Input::Special(ncurses::KEY_UP)     => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_UP)),
                 Input::Special(ncurses::KEY_SR)     => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_UP)),
-                Input::Special(code @ 572..=576)    => return Ok(make_input(code - 570, ncurses::KEY_UP)),
                 Input::Special(ncurses::KEY_DOWN)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_DOWN)),
                 Input::Special(ncurses::KEY_SF)     => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DOWN)),
-                Input::Special(code @ 529..=533)    => return Ok(make_input(code - 527, ncurses::KEY_DOWN)),
                 Input::Special(ncurses::KEY_HOME)   => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_HOME)),
                 Input::Special(ncurses::KEY_SHOME)  => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_HOME)),
-                Input::Special(code @ 540..=544)    => return Ok(make_input(code - 538, ncurses::KEY_HOME)),
                 Input::Special(ncurses::KEY_END)    => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_END)),
                 Input::Special(ncurses::KEY_SEND)   => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_END)),
-                Input::Special(code @ 534..=538)    => return Ok(make_input(code - 532, ncurses::KEY_END)),
+                Input::Special(ncurses::KEY_PPAGE)  => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_PPAGE)),
+                Input::Special(ncurses::KEY_NPAGE)  => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_NPAGE)),
                 Input::Special(ncurses::KEY_DC)     => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_DC)),
                 Input::Special(ncurses::KEY_SDC)    => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DC)),
-                Input::Special(code @ 523..=527)    => return Ok(make_input(code - 521, ncurses::KEY_DC)),
                 Input::Special(ncurses::KEY_BTAB)   => return Ok(Input::Decomposed(false, false, true, '\t' as i32)),
                 Input::Character(chr) if (chr as u32) < 27 && chr != '\t' && chr != '\n' && chr != '\u{8}'
                     => return Ok(Input::Decomposed(true, false, false, chr as i32 + 96)),
