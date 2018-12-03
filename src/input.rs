@@ -257,54 +257,43 @@ impl InputStream {
             }
         }
 
+        // Hackily detect if our terminal is using XTerm-style codes and add the rest if necessary
+        if curses::key_code_for(const_cstr!("\x1bOA").as_cstr()) == Ok(ncurses::KEY_UP) &&
+           curses::key_code_for(const_cstr!("\x1bOB").as_cstr()) == Ok(ncurses::KEY_DOWN) &&
+           curses::key_code_for(const_cstr!("\x1bOC").as_cstr()) == Ok(ncurses::KEY_RIGHT) &&
+           curses::key_code_for(const_cstr!("\x1bOD").as_cstr()) == Ok(ncurses::KEY_LEFT) &&
+           curses::key_code_for(const_cstr!("\x1b[1;2C").as_cstr()) == Ok(ncurses::KEY_SRIGHT) &&
+           curses::key_code_for(const_cstr!("\x1b[1;2D").as_cstr()) == Ok(ncurses::KEY_SLEFT) {
+
+            for mode in 2..=7 {
+                for &(indicator, key) in &[(b'A', 0), (b'B', 1), (b'C', 2), (b'D', 3), (b'H', 4), (b'F', 5)] {
+                    let _ = define_if_necessary(
+                        CStr::from_bytes_with_nul(&[0x1b, b'[', b'1', b';', b'1' + mode as u8, indicator, 0]).unwrap(),
+                        2300 + mode * 10 + key
+                    );
+                }
+            }
+
+            if curses::key_code_for(const_cstr!("\x1b[3~").as_cstr()) == Ok(ncurses::KEY_DC) &&
+               curses::key_code_for(const_cstr!("\x1b[5~").as_cstr()) == Ok(ncurses::KEY_PPAGE) &&
+               curses::key_code_for(const_cstr!("\x1b[6~").as_cstr()) == Ok(ncurses::KEY_NPAGE) {
+
+                for mode in 2..=7 {
+                    for &(indicator, key) in &[(b'3', 8), (b'5', 6), (b'6', 7)] {
+                        let _ = define_if_necessary(
+                            CStr::from_bytes_with_nul(&[0x1b, b'[', indicator, b';', b'1' + mode as u8, b'~', 0]).unwrap(),
+                            2300 + mode * 10 + key
+                        );
+                    }
+                }
+            }
+        }
+
         // TODO: What about in front of, e.g., arrow keys? Generalize this.
         // Brute-force handle the most common cases for AltSendsEscape
         for byte in (1..=26).chain(97..=122) {
             let _ = define_if_necessary(CStr::from_bytes_with_nul(&[0x1b, byte as u8, 0]).unwrap(), 3000 + byte);
         }
-
-/*
-        // Hackily detect if our terminal is using XTerm-style codes and add the rest if necessary
-        if curses::key_code_for(const_cstr!("\x1b[1;2D").as_cstr()) == Ok(ncurses::KEY_SLEFT) &&
-           curses::key_code_for(const_cstr!("\x1b[1;2C").as_cstr()) == Ok(ncurses::KEY_SRIGHT) {
-            let _ = define_if_necessary(const_cstr!("\x1b[1;5A").as_cstr(), 574); // Ctrl + Up
-            let _ = define_if_necessary(const_cstr!("\x1b[1;5B").as_cstr(), 531); // Ctrl + Down
-            let _ = define_if_necessary(const_cstr!("\x1b[1;5C").as_cstr(), 568); // Ctrl + Right
-            let _ = define_if_necessary(const_cstr!("\x1b[1;5D").as_cstr(), 553); // Ctrl + Left
-            let _ = define_if_necessary(const_cstr!("\x1b[1;5H").as_cstr(), 542); // Ctrl + Home
-            let _ = define_if_necessary(const_cstr!("\x1b[1;5F").as_cstr(), 536); // Ctrl + End
-
-            let _ = define_if_necessary(const_cstr!("\x1b[1;3A").as_cstr(), 572); // Alt + Up
-            let _ = define_if_necessary(const_cstr!("\x1b[1;3B").as_cstr(), 529); // Alt + Down
-            let _ = define_if_necessary(const_cstr!("\x1b[1;3C").as_cstr(), 566); // Alt + Right
-            let _ = define_if_necessary(const_cstr!("\x1b[1;3D").as_cstr(), 551); // Alt + Left
-            let _ = define_if_necessary(const_cstr!("\x1b[1;3H").as_cstr(), 540); // Alt + Home
-            let _ = define_if_necessary(const_cstr!("\x1b[1;3F").as_cstr(), 534); // Alt + End
-
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7A").as_cstr(), 576); // Ctrl + Alt + Up
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7B").as_cstr(), 533); // Ctrl + Alt + Down
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7C").as_cstr(), 570); // Ctrl + Alt + Right
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7D").as_cstr(), 555); // Ctrl + Alt + Left
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7H").as_cstr(), 544); // Ctrl + Alt + Home
-            let _ = define_if_necessary(const_cstr!("\x1b[1;7F").as_cstr(), 538); // Ctrl + Alt + End
-
-            if curses::key_code_for(const_cstr!("\x1b[3~").as_cstr()) == Ok(ncurses::KEY_DC) &&
-               curses::key_code_for(const_cstr!("\x1b[5~").as_cstr()) == Ok(ncurses::KEY_PPAGE) &&
-               curses::key_code_for(const_cstr!("\x1b[6~").as_cstr()) == Ok(ncurses::KEY_NPAGE) {
-                let _ = define_if_necessary(const_cstr!("\x1b[3;5~").as_cstr(), 525); // Ctrl + Delete
-                let _ = define_if_necessary(const_cstr!("\x1b[5;5~").as_cstr(), 563); // Ctrl + PageUp
-                let _ = define_if_necessary(const_cstr!("\x1b[6;5~").as_cstr(), 558); // Ctrl + PageDown
-
-                let _ = define_if_necessary(const_cstr!("\x1b[3;3~").as_cstr(), 523); // Alt + Delete
-                let _ = define_if_necessary(const_cstr!("\x1b[5;3~").as_cstr(), 561); // Alt + PageUp
-                let _ = define_if_necessary(const_cstr!("\x1b[6;3~").as_cstr(), 556); // Alt + PageDown
-
-                let _ = define_if_necessary(const_cstr!("\x1b[3;7~").as_cstr(), 527); // Ctrl + Alt + Delete
-                let _ = define_if_necessary(const_cstr!("\x1b[5;7~").as_cstr(), 565); // Ctrl + Alt + PageUp
-                let _ = define_if_necessary(const_cstr!("\x1b[6;7~").as_cstr(), 560); // Ctrl + Alt + PageDown
-            }
-        }
-*/
 
         ncurses::ungetch(ncurses::KEY_RESIZE);
 
@@ -399,6 +388,10 @@ impl InputStream {
                         1 => return Ok(make_input(mode, ncurses::KEY_DOWN)),
                         2 => return Ok(make_input(mode, ncurses::KEY_RIGHT)),
                         3 => return Ok(make_input(mode, ncurses::KEY_LEFT)),
+                        4 => return Ok(make_input(mode, ncurses::KEY_HOME)),
+                        5 => return Ok(make_input(mode, ncurses::KEY_END)),
+                        6 => return Ok(make_input(mode, ncurses::KEY_PPAGE)),
+                        7 => return Ok(make_input(mode, ncurses::KEY_NPAGE)),
                         8 => return Ok(make_input(mode, ncurses::KEY_DC)),
                         _ => { }
                     }
