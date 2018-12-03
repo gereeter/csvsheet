@@ -1,5 +1,5 @@
 use std::io::Write;
-
+use std::ffi::CStr;
 use const_cstr::ConstCStr;
 
 use curses::{self, Window, Input};
@@ -221,62 +221,11 @@ impl InputStream {
             }
         }
 
-        // TODO: Simplify and generalize this.
-        // TODO: What about in front of, e.g., arrow keys?
+        // TODO: What about in front of, e.g., arrow keys? Generalize this.
         // Brute-force handle the most common cases for AltSendsEscape
-        let _ = define_if_necessary(const_cstr!("\x1b\x01").as_cstr(), 3001);
-        let _ = define_if_necessary(const_cstr!("\x1b\x02").as_cstr(), 3002);
-        let _ = define_if_necessary(const_cstr!("\x1b\x03").as_cstr(), 3003);
-        let _ = define_if_necessary(const_cstr!("\x1b\x04").as_cstr(), 3004);
-        let _ = define_if_necessary(const_cstr!("\x1b\x05").as_cstr(), 3005);
-        let _ = define_if_necessary(const_cstr!("\x1b\x06").as_cstr(), 3006);
-        let _ = define_if_necessary(const_cstr!("\x1b\x07").as_cstr(), 3007);
-        let _ = define_if_necessary(const_cstr!("\x1b\x08").as_cstr(), 3008);
-        let _ = define_if_necessary(const_cstr!("\x1b\x09").as_cstr(), 3009);
-        let _ = define_if_necessary(const_cstr!("\x1b\x0a").as_cstr(), 3010);
-        let _ = define_if_necessary(const_cstr!("\x1b\x0b").as_cstr(), 3011);
-        let _ = define_if_necessary(const_cstr!("\x1b\x0c").as_cstr(), 3012);
-        let _ = define_if_necessary(const_cstr!("\x1b\x0d").as_cstr(), 3013);
-        let _ = define_if_necessary(const_cstr!("\x1b\x0e").as_cstr(), 3014);
-        let _ = define_if_necessary(const_cstr!("\x1b\x0f").as_cstr(), 3015);
-        let _ = define_if_necessary(const_cstr!("\x1b\x10").as_cstr(), 3016);
-        let _ = define_if_necessary(const_cstr!("\x1b\x11").as_cstr(), 3017);
-        let _ = define_if_necessary(const_cstr!("\x1b\x12").as_cstr(), 3018);
-        let _ = define_if_necessary(const_cstr!("\x1b\x13").as_cstr(), 3019);
-        let _ = define_if_necessary(const_cstr!("\x1b\x14").as_cstr(), 3020);
-        let _ = define_if_necessary(const_cstr!("\x1b\x15").as_cstr(), 3021);
-        let _ = define_if_necessary(const_cstr!("\x1b\x16").as_cstr(), 3022);
-        let _ = define_if_necessary(const_cstr!("\x1b\x17").as_cstr(), 3023);
-        let _ = define_if_necessary(const_cstr!("\x1b\x18").as_cstr(), 3024);
-        let _ = define_if_necessary(const_cstr!("\x1b\x19").as_cstr(), 3025);
-        let _ = define_if_necessary(const_cstr!("\x1b\x1a").as_cstr(), 3026);
-
-        let _ = define_if_necessary(const_cstr!("\x1b\x61").as_cstr(), 3097);
-        let _ = define_if_necessary(const_cstr!("\x1b\x62").as_cstr(), 3098);
-        let _ = define_if_necessary(const_cstr!("\x1b\x63").as_cstr(), 3099);
-        let _ = define_if_necessary(const_cstr!("\x1b\x64").as_cstr(), 3100);
-        let _ = define_if_necessary(const_cstr!("\x1b\x65").as_cstr(), 3101);
-        let _ = define_if_necessary(const_cstr!("\x1b\x66").as_cstr(), 3102);
-        let _ = define_if_necessary(const_cstr!("\x1b\x67").as_cstr(), 3103);
-        let _ = define_if_necessary(const_cstr!("\x1b\x68").as_cstr(), 3104);
-        let _ = define_if_necessary(const_cstr!("\x1b\x69").as_cstr(), 3105);
-        let _ = define_if_necessary(const_cstr!("\x1b\x6a").as_cstr(), 3106);
-        let _ = define_if_necessary(const_cstr!("\x1b\x6b").as_cstr(), 3107);
-        let _ = define_if_necessary(const_cstr!("\x1b\x6c").as_cstr(), 3108);
-        let _ = define_if_necessary(const_cstr!("\x1b\x6d").as_cstr(), 3109);
-        let _ = define_if_necessary(const_cstr!("\x1b\x6e").as_cstr(), 3110);
-        let _ = define_if_necessary(const_cstr!("\x1b\x6f").as_cstr(), 3111);
-        let _ = define_if_necessary(const_cstr!("\x1b\x70").as_cstr(), 3112);
-        let _ = define_if_necessary(const_cstr!("\x1b\x71").as_cstr(), 3113);
-        let _ = define_if_necessary(const_cstr!("\x1b\x72").as_cstr(), 3114);
-        let _ = define_if_necessary(const_cstr!("\x1b\x73").as_cstr(), 3115);
-        let _ = define_if_necessary(const_cstr!("\x1b\x74").as_cstr(), 3116);
-        let _ = define_if_necessary(const_cstr!("\x1b\x75").as_cstr(), 3117);
-        let _ = define_if_necessary(const_cstr!("\x1b\x76").as_cstr(), 3118);
-        let _ = define_if_necessary(const_cstr!("\x1b\x77").as_cstr(), 3119);
-        let _ = define_if_necessary(const_cstr!("\x1b\x78").as_cstr(), 3120);
-        let _ = define_if_necessary(const_cstr!("\x1b\x79").as_cstr(), 3121);
-        let _ = define_if_necessary(const_cstr!("\x1b\x7a").as_cstr(), 3122);
+        for byte in (1..=26).chain(97..=122) {
+            let _ = define_if_necessary(CStr::from_bytes_with_nul(&[0x1b, byte as u8, 0]).unwrap(), 3000 + byte);
+        }
 
 /*
         // Hackily detect if our terminal is using XTerm-style codes and add the rest if necessary
