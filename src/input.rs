@@ -373,7 +373,8 @@ impl InputStream {
                 Input::Special(ncurses::KEY_NPAGE)  => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_NPAGE)),
                 Input::Special(ncurses::KEY_DC)     => return Ok(Input::Decomposed(false, false, false, ncurses::KEY_DC)),
                 Input::Special(ncurses::KEY_SDC)    => return Ok(Input::Decomposed(false, false, true, ncurses::KEY_DC)),
-                Input::Special(ncurses::KEY_BTAB)   => return Ok(Input::Decomposed(false, false, true, '\t' as i32)),
+                Input::Special(ncurses::KEY_BTAB)    => return Ok(Input::Decomposed(false, false, true, '\t' as i32)),
+                Input::Special(ncurses::KEY_SUSPEND) => return Ok(Input::Decomposed(true, false, false, 'z' as i32)),
                 Input::Character(chr) if (chr as u32) < 27 && chr != '\t' && chr != '\n' && chr != '\u{8}'
                     => return Ok(Input::Decomposed(true, false, false, chr as i32 + 96)),
                 Input::Character(chr) if (chr as u32) > 128 && (chr as u32) < 155 // TODO: Consider whitelist? Cancel is sometimes used for Backspace
