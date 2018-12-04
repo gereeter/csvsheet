@@ -312,6 +312,10 @@ impl Document {
         self.modified = true;
     }
 
+    fn resize_column(&mut self, col: ColId) {
+        self.column_widths[col] = self.data.iter().map(|row| row[col].total_width).max().unwrap_or(0);
+    }
+
     fn save_to(&mut self, path: &Path) -> Result<(), std::io::Error> {
         let named_temp_file = tempfile::NamedTempFile::new_in(path.parent().ok_or(std::io::ErrorKind::Other)?)?;
         // FIXME: There is a race condition here where the permissions might get modified in between these calls. I'm not sure how to fix that.
@@ -378,7 +382,14 @@ impl UndoOp {
         document.modified = true;
         match self {
             UndoOp::Edit { row_id, col_id, before_in_cell_pos, after_in_cell_pos, before_text } => {
+                let before_width = before_text.total_width;
                 let after_text = std::mem::replace(&mut document.data[row_id][col_id], before_text);
+                let after_width = after_text.total_width;
+
+                let after_column_width = document.column_widths[col_id];
+                if before_width > after_column_width || (after_width == after_column_width && before_width < after_column_width) {
+                    document.resize_column(col_id);
+                }
 
                 // TODO: Is popping views until we find the cell the correct behavior here?
                 let (row_index, col_index) = loop {
@@ -929,7 +940,7 @@ fn main() {
                     document.modified = true;
                     redraw = true;
                     if reevaluate_column_width || cursor.in_cell_pos.display_column > cell.total_width {
-                        document.column_widths[document.views.top().cols[cursor.col_index]] = document.data.iter().map(|row| row[document.views.top().cols[cursor.col_index]].total_width).max().unwrap_or(0);
+                        document.resize_column(document.views.top().cols[cursor.col_index]);
                     }
                 }
             }
