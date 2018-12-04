@@ -640,7 +640,7 @@ fn handle_editing(input: Option<Input>, text: &mut ShapedString, position: &mut 
         Some(Input::Special(ncurses::KEY_BACKSPACE)) => if !text.at_beginning(position) {
             text.delete_left(position);
         },
-        Some(Input::Special(ncurses::KEY_DC)) if !text.at_end(position) => {
+        Some(Input::Decomposed(false, false, _, ncurses::KEY_DC)) if !text.at_end(position) => {
             text.delete_right(position);
         },
         Some(Input::Character(chr)) if !chr.is_control() => {
@@ -916,7 +916,7 @@ fn main() {
             // Undo management
             // TODO: don't duplicate the knowledge of what keys do what
             match input {
-                Some(Input::Special(ncurses::KEY_DC)) | Some(Input::Special(ncurses::KEY_BACKSPACE)) => {
+                Some(Input::Decomposed(false, false, _, ncurses::KEY_DC)) | Some(Input::Special(ncurses::KEY_BACKSPACE)) => {
                     undo_state.prepare_edit(Some(EditType::Delete), &document, &cursor);
                 },
                 Some(Input::Character(c)) if !c.is_control() => {
