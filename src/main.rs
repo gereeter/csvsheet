@@ -842,16 +842,6 @@ fn main() {
             redraw = true;
         }
 
-        if let Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) = input { // Ctrl + Q
-            undo_state.prepare_edit(None, &document, &cursor);
-            if document.modified {
-                new_mode = Mode::Quitting;
-                redraw = true;
-            } else {
-                break;
-            }
-        }
-
         // Keys with modifiers (at least on xterm, utf8 mode)
         //        Left     Up     Right     Down     Delete  Backspace
         // None   KEY_LEFT KEY_UP KEY_RIGHT KEY_DOWN KEY_DC  KEY_BACKSPACE
@@ -908,6 +898,14 @@ fn main() {
                 } else if let Some(Input::Character('\n')) = input {
                     new_mode = Mode::Normal;
                     redraw = true;
+                } else if let Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) = input { // Ctrl + Q
+                    undo_state.prepare_edit(None, &document, &cursor);
+                    if document.modified {
+                        new_mode = Mode::Quitting;
+                        redraw = true;
+                    } else {
+                        break;
+                    }
                 } else {
                     new_mode = Mode::Filter { query, query_pos };
                 }
@@ -1071,6 +1069,15 @@ fn main() {
                 undo_state.prepare_edit(None, &document, &cursor);
                 new_mode = Mode::Help;
                 redraw = true;
+            },
+            Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) => { // Ctrl + Q
+                undo_state.prepare_edit(None, &document, &cursor);
+                if document.modified {
+                    new_mode = Mode::Quitting;
+                    redraw = true;
+                } else {
+                    break;
+                }
             },
             // FIXME: This triggers on Ctrl + Z /and/ Ctrl + Shift + Z, but we'd like the latter to be redo. For now we settle for Ctrl + Alt + Z,
             // but it would be much much better to detect the shift key.
@@ -1373,7 +1380,7 @@ fn main() {
                 }
             },
             Mode::Help => match input {
-                Some(Input::Character('\u{1b}')) => {
+                Some(Input::Character('\u{1b}')) | Some(Input::Special(ncurses::KEY_EXIT)) | Some(Input::Decomposed(true, false, _, 113)) => { // Escape or Ctrl + Q
                     new_mode = Mode::Normal;
                     redraw = true;
                 },
