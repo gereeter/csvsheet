@@ -8,6 +8,7 @@ extern crate unicode_width;
 extern crate terminfo;
 extern crate clap;
 extern crate tempfile;
+extern crate xattr;
 #[macro_use] extern crate const_cstr;
 
 mod indexed_vec;
@@ -322,6 +323,11 @@ impl Document {
         // FIXME: Copy other metadata?
         let permissions = std::fs::metadata(path)?.permissions();
         std::fs::set_permissions(named_temp_file.path(), permissions)?;
+        for xattr_name in xattr::list(path)? {
+            if let Some(value) = xattr::get(path, &xattr_name)? {
+                xattr::set(named_temp_file.path(), &xattr_name, &value)?;
+            }
+        }
         let mut temp_file = named_temp_file.reopen()?;
         let temp_path = named_temp_file.into_temp_path();
         {
