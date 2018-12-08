@@ -27,16 +27,14 @@ use std::path::Path;
 use std::borrow::Cow;
 
 use csv::ReaderBuilder;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use unicode_segmentation::GraphemeCursor;
+use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
 
 use ncurses::{A_BOLD, A_NORMAL};
 
 #[derive(Clone)]
 struct ShapedString {
     text: String,
-    // Byte index, column start
-    grapheme_info: Vec<(usize, usize)>,
     total_width: usize
 }
 
@@ -44,127 +42,123 @@ impl ShapedString {
     fn new() -> Self {
         ShapedString {
             text: String::new(),
-            grapheme_info: Vec::new(),
             total_width: 0
         }
     }
 
     fn from_string(text: String) -> Self {
-        let mut this = ShapedString {
+         let width = UnicodeWidthStr::width(&*text);
+         ShapedString {
             text: text,
-            grapheme_info: Vec::new(),
-            total_width: 0
-        };
-        this.reshape();
-        this
+            total_width: width
+        }
     }
 
-    fn display_column(&self, grapheme_index: usize) -> usize {
-        self.grapheme_info.get(grapheme_index)
-                          .map(|&(_, col)| col)
-                          .unwrap_or(self.total_width)
-    }
-
-    fn index_of_display_column(&self, display_column: usize) -> usize {
+    fn offset_of_display_column(&self, display_column: usize) -> usize {
         if self.total_width <= display_column {
-            self.grapheme_info.len()
+            self.text.len()
         } else {
-            self.grapheme_info.iter()
-                              .rposition(|&(_, col)| col <= display_column)
-                              .unwrap_or(0)
+            // TODO: precompute for long strings? Maybe split into chunks with known width?
+            let mut cols_left = self.total_width - display_column;
+            for (i, chr) in self.text.char_indices().rev() {
+                if let Some(char_width) = UnicodeWidthChar::width(chr) {
+                    if cols_left <= char_width {
+                        return i;
+                    } else {
+                        cols_left -= char_width;
+                    }
+                }
+            }
+            0
         }
     }
 
     fn at_beginning(&self, position: &TextPosition) -> bool {
-        position.grapheme_index == 0
+        position.grapheme_cursor.cur_cursor() == 0
     }
 
     fn at_end(&self, position: &TextPosition) -> bool {
-        position.grapheme_index >= self.grapheme_info.len()
+        position.grapheme_cursor.cur_cursor() >= self.text.len()
     }
 
     fn move_left(&self, position: &mut TextPosition) {
-        position.grapheme_index -= 1;
-        position.display_column = self.grapheme_info[position.grapheme_index].1;
+        let after_offset = position.grapheme_cursor.cur_cursor();
+        if let Ok(Some(before_offset)) = position.grapheme_cursor.prev_boundary(&self.text, 0) {
+            position.display_column -= UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+        }
     }
 
     fn move_right(&self, position: &mut TextPosition) {
-        position.grapheme_index += 1;
-        position.display_column = self.display_column(position.grapheme_index);
+        let before_offset = position.grapheme_cursor.cur_cursor();
+        if let Ok(Some(after_offset)) = position.grapheme_cursor.next_boundary(&self.text, 0) {
+            position.display_column += UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+        }
     }
 
     fn move_vert(&self, position: &mut TextPosition) {
-        position.grapheme_index = self.index_of_display_column(position.display_column);
+        let offset = self.offset_of_display_column(position.display_column);
+        position.grapheme_cursor = GraphemeCursor::new(offset, self.text.len(), true);
     }
 
     fn delete_left(&mut self, position: &mut TextPosition) {
         // TODO: RTL text
-        let removed_grapheme_start = self.grapheme_info[position.grapheme_index - 1].0;
-        let removed_grapheme_end = self.grapheme_info.get(position.grapheme_index).map(|&(idx, _)| idx).unwrap_or(self.text.len());
-        self.text.replace_range(removed_grapheme_start..removed_grapheme_end, "");
-        // TODO: reuse information?
-        self.reshape();
-        position.grapheme_index -= 1;
-        position.display_column = self.display_column(position.grapheme_index);
+        let after_offset = position.grapheme_cursor.cur_cursor();
+        if let Ok(Some(before_offset)) = position.grapheme_cursor.prev_boundary(&self.text, 0) {
+            let col_width_removed = UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+
+            self.text.replace_range(before_offset..after_offset, "");
+            self.total_width -= col_width_removed;
+
+            position.display_column -= col_width_removed;
+            position.grapheme_cursor = GraphemeCursor::new(before_offset, self.text.len(), true);
+        }
     }
 
     fn delete_right(&mut self, position: &mut TextPosition) {
         // TODO: RTL text
-        let removed_grapheme_start = self.grapheme_info[position.grapheme_index].0;
-        let removed_grapheme_end = self.grapheme_info.get(position.grapheme_index + 1).map(|&(idx, _)| idx).unwrap_or(self.text.len());
-        self.text.replace_range(removed_grapheme_start..removed_grapheme_end, "");
-        // TODO: reuse information?
-        self.reshape();
-        position.display_column = self.display_column(position.grapheme_index);
+        let before_offset = position.grapheme_cursor.cur_cursor();
+        if let Ok(Some(after_offset)) = position.grapheme_cursor.next_boundary(&self.text, 0) {
+            let col_width_removed = UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+
+            self.text.replace_range(before_offset..after_offset, "");
+            self.total_width -= col_width_removed;
+
+            position.grapheme_cursor = GraphemeCursor::new(before_offset, self.text.len(), true);
+        }
     }
 
     fn insert(&mut self, position: &mut TextPosition, chr: char) {
-        let insertion_point = self.grapheme_info.get(position.grapheme_index).map(|&(idx, _)| idx).unwrap_or(self.text.len());
+        let col_width_inserted = UnicodeWidthChar::width(chr).unwrap_or(0);
+        let insertion_point = position.grapheme_cursor.cur_cursor();
         let tail_bytes = self.text.len() - insertion_point;
-        self.text.insert(insertion_point, chr);
-        self.reshape();
-        // TODO: RTL text
-        position.grapheme_index = if tail_bytes == 0 {
-            self.grapheme_info.len()
-        } else {
-            self.grapheme_info
-                .iter()
-                .rposition(|&(idx, _)| idx + tail_bytes <= self.text.len())
-                .unwrap_or(0)
-        };
-        position.display_column = self.display_column(position.grapheme_index);
-    }
 
-    fn reshape(&mut self) {
-        self.grapheme_info.clear();
-        let mut column = 0;
-        for (index, grapheme) in self.text.grapheme_indices(true) {
-            self.grapheme_info.push((index, column));
-            // TODO: Tabs?
-            column += UnicodeWidthStr::width(grapheme);
-        }
-        self.total_width = column;
+        self.text.insert(insertion_point, chr);
+        self.total_width += col_width_inserted;
+
+        position.display_column += col_width_inserted;
+        position.grapheme_cursor = GraphemeCursor::new(self.text.len() - tail_bytes, self.text.len(), true);
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct TextPosition {
-    // TODO: Use a GraphemeCursor to avoid precomputation?
-    grapheme_index: usize,
+    grapheme_cursor: GraphemeCursor,
     display_column: usize
 }
 
 impl TextPosition {
     fn beginning() -> Self {
         TextPosition {
-            grapheme_index: 0,
+            // TODO: Since we don't know the size we just say it could be followed arbitrarily. Is this correct?
+            // Should we just require the string for creation?
+            grapheme_cursor: GraphemeCursor::new(0, usize::max_value(), true),
             display_column: 0
         }
     }
 
     fn end(str: &ShapedString) -> Self {
         TextPosition {
-            grapheme_index: str.grapheme_info.len(),
+            grapheme_cursor: GraphemeCursor::new(str.text.len(), str.text.len(), true),
             display_column: str.total_width
         }
     }
@@ -412,7 +406,7 @@ impl UndoOp {
                     row_index: row_index,
                     col_index: col_index,
                     cell_display_column: document.views.top().cols[..col_index].iter().map(|&pre_col_id| document.column_widths[pre_col_id] + 3).sum(),
-                    in_cell_pos: before_in_cell_pos
+                    in_cell_pos: before_in_cell_pos.clone()
                 };
 
                 UndoOp::Edit {
@@ -544,7 +538,7 @@ impl UndoState {
         if edit_type != self.current_edit_type {
             self.current_edit_type = edit_type;
             if let Some(&mut UndoOp::Edit { ref mut after_in_cell_pos, .. }) = self.undo_stack.last_mut() {
-                *after_in_cell_pos = cursor.in_cell_pos;
+                *after_in_cell_pos = cursor.in_cell_pos.clone();
             }
             if edit_type.is_some() {
                 let row_id = document.views.top().rows[cursor.row_index];
@@ -553,8 +547,8 @@ impl UndoState {
                 self.push(UndoOp::Edit {
                     row_id: row_id,
                     col_id: col_id,
-                    before_in_cell_pos: cursor.in_cell_pos,
-                    after_in_cell_pos: cursor.in_cell_pos,
+                    before_in_cell_pos: cursor.in_cell_pos.clone(),
+                    after_in_cell_pos: cursor.in_cell_pos.clone(), // TODO: Is this clone expensive? It is just going to be overwritten.
                     before_text: document.data[row_id][col_id].clone()
                 });
             }
@@ -584,24 +578,30 @@ fn draw_clipped_string(window: &mut Window, x: usize, y: usize, left: usize, rig
         return;
     }
 
+    let mut clipped_chars = value.text.chars();
+
     // TODO: Consider binary search
-    let (start_byte, start_col) = if left > x {
-        match value.grapheme_info.iter().find(|&&(_, col)| x + col >= left) {
-            Some(&(byte, col)) => (byte, x + col),
-            None => return // This can happen, e.g. if the last grapheme is wide and partially clips over the left boundary
+    let mut start_col = x;
+    while left > start_col {
+        if let Some(chr) = clipped_chars.next() {
+            start_col += UnicodeWidthChar::width(chr).unwrap_or(0);
+        } else {
+            // We've clipped out the entire string
+            return;
         }
-    } else {
-        (0, x)
-    };
-    let end_byte = if x + value.total_width > right {
-        match value.grapheme_info.iter().rfind(|&&(_, col)| x + col <= right) {
-            Some(&(byte, _)) => byte,
-            None => return // This can't actually happen because it is covered by the early-out case
+    }
+
+    let mut end_col = x + value.total_width;
+    while right < end_col {
+        if let Some(chr) = clipped_chars.next_back() {
+            end_col -= UnicodeWidthChar::width(chr).unwrap_or(0);
+        } else {
+            // We've clipped out the entire string
+            return;
         }
-    } else {
-        value.text.len()
-    };
-    window.mv_add_str(y as i32, (start_col - left) as i32, &value.text[start_byte..end_byte]);
+    }
+
+    window.mv_add_str(y as i32, (start_col - left) as i32, &clipped_chars.as_str());
 }
 
 fn display_row(document: &Document, row: RowId, window: &mut Window, y: usize, left: usize, right: usize, attributes: ncurses::attr_t) {
@@ -950,7 +950,7 @@ fn main() {
             }
             // Navigation
             if !inside_paste {
-                let mut new_pos = cursor.in_cell_pos;
+                let mut new_pos = cursor.in_cell_pos.clone();
                 try_fit_x = handle_navigation(input, get_cell(&document, &cursor), &mut new_pos, |dir, skip| {
                     match dir {
                         Direction::Left if cursor.col_index > 0 => match skip {
@@ -1469,10 +1469,10 @@ fn main() {
             } else {
                 // TODO(efficiency): avoid allocations
                 let status = format!(
-                    "[ row {}/{}, col {}/{}, char {}/{}, last_input: {:?} ]",
+                    "[ row {}/{}, col {}/{}, byte {}/{}, last_input: {:?} ]",
                     document.row_numbers[document.views.top().rows[cursor.row_index]] + 1, document.height(),
                     document.col_numbers[document.views.top().cols[cursor.col_index]] + 1, document.width(),
-                    cursor.in_cell_pos.grapheme_index, get_cell(&document, &cursor).grapheme_info.len(),
+                    cursor.in_cell_pos.grapheme_cursor.cur_cursor(), get_cell(&document, &cursor).text.len(), // TODO: count graphemes?
                     input
                 );
                 window.mv_add_str(height as i32 - 1, ((width.saturating_sub(status.len())) / 2) as i32, &status);
@@ -1480,8 +1480,8 @@ fn main() {
 
             if let Mode::Normal = mode {
                 window.mv(screen_y as i32, screen_x as i32);
-            } else if let Mode::Filter { ref query, query_pos, .. } = mode {
-                window.mv(height as i32 - 1, 22 + query.display_column(query_pos.grapheme_index) as i32);
+            } else if let Mode::Filter { ref query_pos, .. } = mode {
+                window.mv(height as i32 - 1, 22 + query_pos.display_column as i32);
             }
             window.refresh();
         }
