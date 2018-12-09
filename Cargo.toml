@@ -17,3 +17,4 @@ clap = "2.32.0"
 tempfile = "3.0.4"
 xattr = "0.2.2"
 const-cstr = "0.3.0"
+smallvec = { version = "0.6.7", features = ["union"] }

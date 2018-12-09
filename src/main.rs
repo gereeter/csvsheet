@@ -9,17 +9,20 @@ extern crate terminfo;
 extern crate clap;
 extern crate tempfile;
 extern crate xattr;
+extern crate smallvec;
 #[macro_use] extern crate const_cstr;
 
 mod indexed_vec;
 mod stack;
 mod curses;
 mod input;
+mod string;
 //mod recurses;
 
 use indexed_vec::{Idx, IndexVec};
 use stack::RefillingStack;
 use curses::{Window, Input};
+use string::SmallString;
 
 use std::cmp;
 use std::iter;
@@ -34,19 +37,19 @@ use ncurses::{A_BOLD, A_NORMAL};
 
 #[derive(Clone)]
 struct ShapedString {
-    text: String,
+    text: SmallString,
     total_width: usize
 }
 
 impl ShapedString {
     fn new() -> Self {
         ShapedString {
-            text: String::new(),
+            text: SmallString::new(),
             total_width: 0
         }
     }
 
-    fn from_string(text: String) -> Self {
+    fn from_string(text: SmallString) -> Self {
          let width = UnicodeWidthStr::width(&*text);
          ShapedString {
             text: text,
@@ -106,7 +109,7 @@ impl ShapedString {
         if let Ok(Some(before_offset)) = position.grapheme_cursor.prev_boundary(&self.text, 0) {
             let col_width_removed = UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
 
-            self.text.replace_range(before_offset..after_offset, "");
+            self.text.remove_range(before_offset..after_offset);
             self.total_width -= col_width_removed;
 
             position.display_column -= col_width_removed;
@@ -120,7 +123,7 @@ impl ShapedString {
         if let Ok(Some(after_offset)) = position.grapheme_cursor.next_boundary(&self.text, 0) {
             let col_width_removed = UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
 
-            self.text.replace_range(before_offset..after_offset, "");
+            self.text.remove_range(before_offset..after_offset);
             self.total_width -= col_width_removed;
 
             position.grapheme_cursor = GraphemeCursor::new(before_offset, self.text.len(), true);
@@ -605,8 +608,8 @@ fn draw_clipped_string(window: &mut Window, x: usize, y: usize, left: usize, rig
 }
 
 fn display_row(document: &Document, row: RowId, window: &mut Window, y: usize, left: usize, right: usize, attributes: ncurses::attr_t) {
-    let single_sep = ShapedString::from_string(" │ ".to_owned());
-    let double_sep = ShapedString::from_string(" ║ ".to_owned());
+    let single_sep = ShapedString::from_string(SmallString::from_str(" │ "));
+    let double_sep = ShapedString::from_string(SmallString::from_str(" ║ "));
     let mut x = 0usize;
     let mut prev_col_num = None;
     for &col in &document.views.top().cols {
@@ -789,7 +792,7 @@ fn main() {
               .map(|record| {
                   record.expect("Problem reading record")
                         .iter()
-                        .map(|s| ShapedString::from_string(s.to_owned()))
+                        .map(|s| ShapedString::from_string(SmallString::from_str(s)))
                         .collect()
               })
              .collect(),
@@ -879,7 +882,7 @@ fn main() {
                             good = true;
                         }
 
-                        if document_data[row].iter().any(|str| str.text.contains(&query.text)) {
+                        if document_data[row].iter().any(|str| str.text.contains(&*query.text)) {
                             good = true;
                         }
 
