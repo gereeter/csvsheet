@@ -11,14 +11,6 @@ impl Drop for Window {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum Input {
-    Byte(u8),
-    Character(char),
-    Special(i32),
-    Decomposed(bool, bool, bool, i32),
-}
-
 // FIXME: error handling
 impl Window {
     // Only run once
@@ -37,14 +29,12 @@ impl Window {
         ncurses::wrefresh(self.inner);
     }
 
-    pub fn get_ch(&mut self) -> Result<Input, ()> {
+    pub fn get_ch(&mut self) -> Result<i32, ()> {
         let code = ncurses::wgetch(self.inner);
         if code == ncurses::ERR {
             Err(())
-        } else if code >= 0 && code < 256 {
-            Ok(Input::Byte(code as u8))
         } else {
-            Ok(Input::Special(code))
+            Ok(code)
         }
     }
 
