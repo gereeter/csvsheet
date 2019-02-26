@@ -8,13 +8,13 @@ default = ["ncurses-ext"]
 ncurses-ext = []
 
 [dependencies]
-ncurses = "5.97.0"
-csv = "1.0.2"
+ncurses = "5.99.0"
+csv = "1.0.5"
 unicode-segmentation = "1.2.1"
 unicode-width = "0.1.5"
 terminfo = "0.6.1"
 clap = "2.32.0"
-tempfile = "3.0.4"
+tempfile = "3.0.7"
 xattr = "0.2.2"
 const-cstr = "0.3.0"
-smallvec = { version = "0.6.7", features = ["union"] }
+smallvec = { version = "0.6.9", features = ["union"] }

@@ -1,4 +1,4 @@
-#![feature(nll, if_while_or_patterns)] // TODO: consider stabilization?
+#![feature(nll)] // TODO: consider stabilization?
 // nll is jusr convenience
 
 extern crate ncurses;
