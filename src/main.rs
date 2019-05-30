@@ -58,25 +58,6 @@ impl ShapedString {
         }
     }
 
-    fn offset_of_display_column(&self, display_column: usize) -> usize {
-        if self.total_width <= display_column {
-            self.text.len()
-        } else {
-            // TODO: precompute for long strings? Maybe split into chunks with known width?
-            let mut cols_left = self.total_width - display_column;
-            for (i, chr) in self.text.char_indices().rev() {
-                if let Some(char_width) = UnicodeWidthChar::width(chr) {
-                    if cols_left <= char_width {
-                        return i;
-                    } else {
-                        cols_left -= char_width;
-                    }
-                }
-            }
-            0
-        }
-    }
-
     fn at_beginning(&self, position: &TextPosition) -> bool {
         position.grapheme_cursor.cur_cursor() == 0
     }
@@ -89,6 +70,7 @@ impl ShapedString {
         let after_offset = position.grapheme_cursor.cur_cursor();
         if let Ok(Some(before_offset)) = position.grapheme_cursor.prev_boundary(&self.text, 0) {
             position.display_column -= UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+            position.movement_column = position.display_column;
         }
     }
 
@@ -96,12 +78,26 @@ impl ShapedString {
         let before_offset = position.grapheme_cursor.cur_cursor();
         if let Ok(Some(after_offset)) = position.grapheme_cursor.next_boundary(&self.text, 0) {
             position.display_column += UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+            position.movement_column = position.display_column;
         }
     }
 
     fn move_vert(&self, position: &mut TextPosition) {
-        let offset = self.offset_of_display_column(position.display_column);
-        position.grapheme_cursor = GraphemeCursor::new(offset, self.text.len(), true);
+        // We will iterate end-to-start to find the grapheme that is selected
+        position.grapheme_cursor = GraphemeCursor::new(self.text.len(), self.text.len(), true);
+        position.display_column = self.total_width;
+
+        // TODO: precompute column-to-offset mappings for long strings to bring down complexity here?
+        let mut after_offset = self.text.len();
+        while position.display_column > position.movement_column {
+            // Move leftward until we pass our target
+            if let Ok(Some(before_offset)) = position.grapheme_cursor.prev_boundary(&self.text, 0) {
+                position.display_column -= UnicodeWidthStr::width(&self.text[before_offset..after_offset]);
+                after_offset = before_offset;
+            } else {
+                return;
+            }
+        }
     }
 
     fn delete_left(&mut self, position: &mut TextPosition) {
@@ -114,6 +110,7 @@ impl ShapedString {
             self.total_width -= col_width_removed;
 
             position.display_column -= col_width_removed;
+            position.movement_column = position.display_column;
             position.grapheme_cursor = GraphemeCursor::new(before_offset, self.text.len(), true);
         }
     }
@@ -127,6 +124,7 @@ impl ShapedString {
             self.text.remove_range(before_offset..after_offset);
             self.total_width -= col_width_removed;
 
+            position.movement_column = position.display_column;
             position.grapheme_cursor = GraphemeCursor::new(before_offset, self.text.len(), true);
         }
     }
@@ -140,6 +138,7 @@ impl ShapedString {
         self.total_width += col_width_inserted;
 
         position.display_column += col_width_inserted;
+        position.movement_column = position.display_column;
         position.grapheme_cursor = GraphemeCursor::new(self.text.len() - tail_bytes, self.text.len(), true);
     }
 }
@@ -147,7 +146,8 @@ impl ShapedString {
 #[derive(Clone)]
 struct TextPosition {
     grapheme_cursor: GraphemeCursor,
-    display_column: usize
+    display_column: usize,
+    movement_column: usize // For vertical movement, what column we are in. This may be in the middle of a grapheme or even out of bounds
 }
 
 impl TextPosition {
@@ -156,14 +156,16 @@ impl TextPosition {
             // TODO: Since we don't know the size we just say it could be followed arbitrarily. Is this correct?
             // Should we just require the string for creation?
             grapheme_cursor: GraphemeCursor::new(0, usize::max_value(), true),
-            display_column: 0
+            display_column: 0,
+            movement_column: 0
         }
     }
 
     fn end(str: &ShapedString) -> Self {
         TextPosition {
             grapheme_cursor: GraphemeCursor::new(str.text.len(), str.text.len(), true),
-            display_column: str.total_width
+            display_column: str.total_width,
+            movement_column: str.total_width
         }
     }
 }
@@ -942,12 +944,14 @@ fn main() {
             // Editing
             {
                 let cell = &mut document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]];
-                let reevaluate_column_width = cell.total_width == document.column_widths[document.views.top().cols[cursor.col_index]];
+                let old_cell_width = cell.total_width;
+                let column_width = document.column_widths[document.views.top().cols[cursor.col_index]];
                 let changed = handle_editing(input, cell, &mut cursor.in_cell_pos);
                 if changed {
                     document.modified = true;
                     redraw = true;
-                    if reevaluate_column_width || cursor.in_cell_pos.display_column > cell.total_width {
+                    // The first check ensures correctness on deletion, while the second check is for insertions.
+                    if old_cell_width == column_width || cell.total_width > column_width {
                         document.resize_column(document.views.top().cols[cursor.col_index]);
                     }
                 }
@@ -1404,7 +1408,7 @@ fn main() {
         let rows_shown = height - 1;
 
         // Scrolling
-        let target_x = cursor.cell_display_column + cmp::min(get_cell(&document, &cursor).total_width, cursor.in_cell_pos.display_column);
+        let target_x = cursor.cell_display_column + cursor.in_cell_pos.display_column;
         let target_y = cursor.row_index;
         if offset_x > target_x || offset_x + width <= target_x {
             // Whenever we scroll, we try to preserve the screen position, with the slight modification that getting the whole cell in
