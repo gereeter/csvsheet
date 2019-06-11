@@ -541,6 +541,8 @@ impl InputStream {
                                 } else {
                                     Input::Character(std::char::from_u32('a' as u32 + key_so_far as u32 - 18).unwrap())
                                 },
+                                50 => Input::Character('\u{1b}'), // Escape
+                                52 => Input::Character('\t'),
                                 55 => Input::Special(ncurses::KEY_DC),
                                 56 => Input::Special(ncurses::KEY_RIGHT),
                                 57 => Input::Special(ncurses::KEY_LEFT),
@@ -550,7 +552,6 @@ impl InputStream {
                                 61 => Input::Special(ncurses::KEY_NPAGE),
                                 62 => Input::Special(ncurses::KEY_HOME),
                                 63 => Input::Special(ncurses::KEY_END),
-                                50 => Input::Character('\u{1b}'), // Escape
                                 69 => Input::Special(ncurses::KEY_F1),
                                 _ => Input::Special(key_so_far as i32 + 600)
                             };
