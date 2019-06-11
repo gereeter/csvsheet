@@ -747,6 +747,7 @@ fn handle_navigation<'a, F: FnOnce(Direction, Skip) -> Option<&'a ShapedString>>
 }
 
 const HELP_TEXT: &str = include_str!("help.md");
+const READ_ONLY_EDIT_MSG: Cow<str> = Cow::Borrowed("Edit forbidden: document opened in read-only mode");
 
 fn main() {
     let arg_matches = clap::App::new("CSVsheet")
@@ -758,6 +759,9 @@ fn main() {
                                         .long("delimiter")
                                         .help("Sets the delimiter to split a line into records")
                                         .takes_value(true))
+                                    .arg(clap::Arg::with_name("read-only")
+                                        .long("read-only")
+                                        .help("Open the file in view-only mode where edits are forbidden"))
                                     .arg(clap::Arg::with_name("FILE")
                                         .help("Sets the file to view/edit")
                                         .required(true)
@@ -767,6 +771,7 @@ fn main() {
     let file_name_arg = arg_matches.value_of_os("FILE").unwrap();
     let file_name = std::fs::canonicalize(&file_name_arg).expect("Unable to reach file");
 
+    let read_only = arg_matches.is_present("read-only");
     let delimiter = arg_matches.value_of_os("delimiter").and_then(|delim_os| delim_os.to_str()).and_then(|delim_str| {
         if delim_str.len() == 1 {
             Some(delim_str.as_bytes()[0])
@@ -833,6 +838,13 @@ fn main() {
 
     let mut startup = true;
     loop {
+        // As a safety feature, make sure that we don't accidentally let edits through in read-only mode
+        if read_only && document.modified {
+            drop(input_stream);
+            drop(window);
+            panic!("BUG: an edit was made while in read-only mode!");
+        }
+
         let mut redraw = false;
         let mut new_mode = Mode::Normal;
         let mut warn_message: Option<Cow<'static, str>> = if startup {
@@ -926,10 +938,14 @@ fn main() {
             // Undo management
             // TODO: don't duplicate the knowledge of what keys do what
             match input {
-                Some(key!([Shift +] KEY_DC)) | Some(key!(KEY_BACKSPACE)) => {
+                Some(key!([Shift +] KEY_DC)) | Some(key!(KEY_BACKSPACE)) => if read_only {
+                    warn_message = Some(READ_ONLY_EDIT_MSG);
+                } else {
                     undo_state.prepare_edit(Some(EditType::Delete), &document, &cursor);
                 },
-                Some((false, false, false, Input::Character(c))) if !c.is_control() => {
+                Some((false, false, false, Input::Character(c))) if !c.is_control() => if read_only {
+                    warn_message = Some(READ_ONLY_EDIT_MSG);
+                } else {
                     undo_state.prepare_edit(Some(EditType::Insert), &document, &cursor);
                 },
                 Some((_, _, _, Input::Special(ncurses::KEY_LEFT))) | Some((_, _, _, Input::Special(ncurses::KEY_RIGHT))) |
@@ -942,7 +958,7 @@ fn main() {
             }
 
             // Editing
-            {
+            if !read_only {
                 let cell = &mut document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]];
                 let old_cell_width = cell.total_width;
                 let column_width = document.column_widths[document.views.top().cols[cursor.col_index]];
@@ -1016,10 +1032,10 @@ fn main() {
                 cursor.in_cell_pos = new_pos;
             }
         match input {
-            Some(key!('\t')) => {
+            Some(key!('\t'))  => {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
-                if cursor.col_index + 1 == document.views.top().cols.len() {
+                if cursor.col_index + 1 == document.views.top().cols.len() && !read_only {
                     // TODO: is creating a new column really the right behaviour?
                     let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
                     for upd_view in document.views.iter_mut() {
@@ -1029,15 +1045,17 @@ fn main() {
                     undo_state.push(UndoOp::DeleteCol(new_col_id));
                     redraw = true;
                 }
-                cursor.cell_display_column += document.column_widths[current_col_id] + 3;
-                cursor.col_index += 1;
-                // TODO: or jump to the beginning?
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+                if cursor.col_index + 1 < document.views.top().cols.len() {
+                    cursor.cell_display_column += document.column_widths[current_col_id] + 3;
+                    cursor.col_index += 1;
+                    // TODO: or jump to the beginning?
+                    cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+                }
             },
             Some(key!('\n')) => {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
-                if cursor.row_index + 1 == document.views.top().rows.len() {
+                if cursor.row_index + 1 == document.views.top().rows.len() && !read_only {
                     let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
                     for upd_view in document.views.iter_mut() {
                         let index = upd_view.rows.iter().position(|&row_id| row_id == current_row_id).expect("Older view not superset of new view!");
@@ -1046,11 +1064,13 @@ fn main() {
                     undo_state.push(UndoOp::DeleteRow(new_row_id));
                     redraw = true;
                 }
-                cursor.row_index += 1;
-                cursor.col_index = data_entry_start_index;
-                cursor.cell_display_column = data_entry_start_display_column;
-                // TODO: or jump to the beginning
-                cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+                if cursor.row_index + 1 < document.views.top().rows.len() {
+                    cursor.row_index += 1;
+                    cursor.col_index = data_entry_start_index;
+                    cursor.cell_display_column = data_entry_start_display_column;
+                    // TODO: or jump to the beginning
+                    cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+                }
             },
             Some((false, false, false, Input::Special(2000))) => { // Start bracketed paste
                 undo_state.prepare_edit(None, &document, &cursor);
@@ -1154,7 +1174,9 @@ fn main() {
                     warn_message = Some("Cannot hide the only row on the screen.".into());
                 }
             },
-            Some(key!(Ctrl + Alt + [Shift +] 'k')) => { // Ctrl + Alt + K
+            Some(key!(Ctrl + Alt + [Shift +] 'k')) => if read_only { // Ctrl + Alt + K
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().rows.len() > 1 {
                     let current_row_id = document.views.top().rows[cursor.row_index];
@@ -1170,7 +1192,9 @@ fn main() {
                     warn_message = Some("Cannot delete the only row on the screen.".into());
                 }
             },
-            Some(key!(Ctrl + [Shift +] 't')) => { // Ctrl + T
+            Some(key!(Ctrl + [Shift +] 't')) => if read_only { // Ctrl + T
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -1205,7 +1229,9 @@ fn main() {
                     warn_message = Some("Cannot hide the only column on the screen.".into());
                 }
             },
-            Some(key!(Ctrl + Alt + [Shift +] 'w')) => { // Ctrl + Alt + W
+            Some(key!(Ctrl + Alt + [Shift +] 'w')) => if read_only { // Ctrl + Alt + W
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 if document.views.top().cols.len() > 1 {
                     let current_col_id = document.views.top().cols[cursor.col_index];
@@ -1236,7 +1262,7 @@ fn main() {
                     redraw = true;
                 }
             },
-            Some(key!(KEY_SAVE)) | Some(key!(Ctrl + [Shift +] 's')) => { // Ctrl + S
+            Some(key!(KEY_SAVE)) | Some(key!(Ctrl + [Shift +] 's')) if !read_only => { // Ctrl + S
                 undo_state.prepare_edit(None, &document, &cursor);
                 // TODO: track file moves and follow the file
                 match document.save_to(&file_name) {
@@ -1249,7 +1275,9 @@ fn main() {
                 }
             },
             // ------------------------------------------ Navigation ----------------------------------------------
-            Some(key!([Ctrl +] Alt + [Shift +] KEY_LEFT)) => { // [Ctrl +] Alt + Left
+            Some(key!([Ctrl +] Alt + [Shift +] KEY_LEFT)) => if read_only { // [Ctrl +] Alt + Left
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id]);
@@ -1261,7 +1289,9 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(key!([Ctrl +] Alt + [Shift +] KEY_RIGHT)) => { // [Ctrl +] Alt + Right
+            Some(key!([Ctrl +] Alt + [Shift +] KEY_RIGHT)) => if read_only { // [Ctrl +] Alt + Right
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_col_id = document.views.top().cols[cursor.col_index];
                 let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
@@ -1275,7 +1305,9 @@ fn main() {
                 cursor.in_cell_pos = TextPosition::beginning();
                 redraw = true;
             },
-            Some(key!([Ctrl +] Alt + [Shift +] KEY_UP)) => { // [Ctrl +] Alt + Up
+            Some(key!([Ctrl +] Alt + [Shift +] KEY_UP)) => if read_only { // [Ctrl +] Alt + Up
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id]);
@@ -1287,7 +1319,9 @@ fn main() {
                 get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
-            Some(key!([Ctrl +] Alt + [Shift +] KEY_DOWN)) => { // [Ctrl +] Alt + Down
+            Some(key!([Ctrl +] Alt + [Shift +] KEY_DOWN)) => if read_only { // [Ctrl +] Alt + Down
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let new_row_id = document.insert_row(document.row_numbers[current_row_id] + 1);
@@ -1300,7 +1334,9 @@ fn main() {
                 get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                 redraw = true;
             },
-            Some(key!(Ctrl + [Shift +] KEY_DC)) => { // Ctrl + Delete
+            Some(key!(Ctrl + [Shift +] KEY_DC)) => if read_only { // Ctrl + Delete
+                warn_message = Some(READ_ONLY_EDIT_MSG);
+            } else {
                 undo_state.prepare_edit(None, &document, &cursor);
                 let current_row_id = document.views.top().rows[cursor.row_index];
                 let current_col_id = document.views.top().cols[cursor.col_index];
