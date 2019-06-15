@@ -1374,10 +1374,7 @@ fn main() {
             Some(key!(KEY_MOUSE)) => {
                 let event = match curses::get_mouse() {
                     Ok(event) => event,
-                    Err(_) => {
-                        // TODO: figure out scrolling, which is triggering this
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
                 // TODO: when are multiple bits set?
                 if event.bstate & ncurses::BUTTON1_PRESSED as ncurses::mmask_t != 0 {
@@ -1402,6 +1399,15 @@ fn main() {
                         get_cell(&document, &cursor).move_vert(&mut cursor.in_cell_pos);
                         try_fit_x = true;
                     }
+                // TODO: allow scrolling past what fits the cursor on the screen
+                } else if event.bstate & ncurses::BUTTON4_PRESSED as ncurses::mmask_t != 0 {
+                    if offset_y > 0 {
+                        offset_y -= 1;
+                        redraw = true;
+                    }
+                } else if event.bstate & ncurses::BUTTON5_PRESSED as ncurses::mmask_t != 0 {
+                    offset_y += 1;
+                    redraw = true;
                 }
             },
             // ------------------------------------- Fallback/Debugging ------------------------------------
