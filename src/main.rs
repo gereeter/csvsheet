@@ -843,8 +843,8 @@ fn main() {
     };
     let mut data_entry_start_index = 0;
     let mut data_entry_start_display_column = 0;
-    let mut screen_x = 0;
-    let mut screen_y = 0;
+    let mut screen_x = Some(0);
+    let mut screen_y = Some(0);
 
     let mut mode = Mode::Normal;
     let mut undo_state = UndoState::new();
@@ -861,6 +861,7 @@ fn main() {
         }
 
         let mut redraw = false;
+        let mut retarget = true;
         let mut new_mode = Mode::Normal;
         let mut warn_message: Option<Cow<'static, str>> = if startup {
             startup = false;
@@ -875,8 +876,8 @@ fn main() {
             let (new_height, new_width) = window.get_max_yx();
             height = new_height as usize;
             width = new_width as usize;
-            screen_x = cmp::min(screen_x, width);
-            screen_y = cmp::min(screen_y, height);
+            screen_x = screen_x.filter(|&x| x < width);
+            screen_y = screen_y.filter(|&y| y < height);
             window.set_clear_ok(true);
             redraw = true;
         }
@@ -1109,8 +1110,8 @@ fn main() {
                 let (new_height, new_width) = window.get_max_yx();
                 height = new_height as usize;
                 width = new_width as usize;
-                screen_x = cmp::min(screen_x, width);
-                screen_y = cmp::min(screen_y, height);
+                screen_x = screen_x.filter(|&x| x < width);
+                screen_y = screen_y.filter(|&y| y < height);
                 window.set_clear_ok(true);
                 redraw = true;
             },
@@ -1420,9 +1421,13 @@ fn main() {
                         offset_y -= 1;
                         redraw = true;
                     }
+                    retarget = false;
                 } else if event.bstate & ncurses::BUTTON5_PRESSED as ncurses::mmask_t != 0 {
-                    offset_y += 1;
-                    redraw = true;
+                    if offset_y + document.views.top().headers + 1 < document.views.top().rows.len() {
+                        offset_y += 1;
+                        redraw = true;
+                    }
+                    retarget = false;
                 }
             },
             // ------------------------------------- Fallback/Debugging ------------------------------------
@@ -1467,42 +1472,59 @@ fn main() {
         // Scrolling
         let target_x = cursor.cell_display_column + cursor.in_cell_pos.display_column;
         let target_y = cursor.row_index;
-        if offset_x > target_x || offset_x + width <= target_x {
-            // Whenever we scroll, we try to preserve the screen position, with the slight modification that getting the whole cell in
-            // view is prefererable, including any separators on the sides
-            offset_x = target_x.saturating_sub(screen_x);
-            redraw = true;
-            try_fit_x = true;
-        }
-        if offset_y + document.views.top().headers > target_y || offset_y + rows_shown <= target_y {
-            offset_y = target_y.saturating_sub(screen_y);
-            if target_y >= document.views.top().headers && offset_y + document.views.top().headers > target_y {
-                offset_y = target_y - document.views.top().headers;
+        if retarget {
+            if offset_x > target_x || offset_x + width <= target_x {
+                // Whenever we scroll, we try to preserve the screen position, with the slight modification that getting the whole cell in
+                // view is prefererable, including any separators on the sides
+                if let Some(x) = screen_x {
+                    offset_x = target_x.saturating_sub(x);
+                } else if offset_x + width <= target_x {
+                    offset_x = target_x - width + 1;
+                } else {
+                    offset_x = target_x;
+                }
+                redraw = true;
+                try_fit_x = true;
             }
-            redraw = true;
-        }
-        if try_fit_x {
-            let mut cell_start = cursor.cell_display_column;
-            let mut cell_end = cell_start + document.column_widths[document.views.top().cols[cursor.col_index]];
-            if cursor.col_index > 0 {
-               cell_start -= 2;
+            if offset_y + document.views.top().headers > target_y || offset_y + rows_shown <= target_y {
+                if let Some(y) = screen_y {
+                    offset_y = target_y.saturating_sub(y);
+                } else if offset_y + rows_shown <= target_y {
+                    offset_y = target_y - rows_shown + 1;
+                } else if target_y >= document.views.top().headers {
+                    offset_y = target_y - document.views.top().headers;
+                } else {
+                    offset_y = 0;
+                }
+
+                if target_y >= document.views.top().headers && offset_y + document.views.top().headers > target_y {
+                    offset_y = target_y - document.views.top().headers;
+                }
+                redraw = true;
             }
-            if cursor.col_index + 1 < document.views.top().cols.len() {
-               cell_end += 2;
-            }
-            // If we can't fit the cell, don't try and end up messing things up.
-            if cell_end - cell_start <= width {
-                if offset_x > cell_start {
-                    offset_x = cell_start;
-                    redraw = true;
-                } else if offset_x + width < cell_end {
-                    offset_x = cell_end - width;
-                    redraw = true;
+            if try_fit_x {
+                let mut cell_start = cursor.cell_display_column;
+                let mut cell_end = cell_start + document.column_widths[document.views.top().cols[cursor.col_index]];
+                if cursor.col_index > 0 {
+                   cell_start -= 2;
+                }
+                if cursor.col_index + 1 < document.views.top().cols.len() {
+                   cell_end += 2;
+                }
+                // If we can't fit the cell, don't try and end up messing things up.
+                if cell_end - cell_start <= width {
+                    if offset_x > cell_start {
+                        offset_x = cell_start;
+                        redraw = true;
+                    } else if offset_x + width < cell_end {
+                        offset_x = cell_end - width;
+                        redraw = true;
+                    }
                 }
             }
         }
-        screen_x = target_x - offset_x;
-        screen_y = target_y - offset_y;
+        screen_x = target_x.checked_sub(offset_x).filter(|&x| x < width);
+        screen_y = target_y.checked_sub(offset_y).filter(|&y| y < rows_shown && (target_y < document.views.top().headers || y >= document.views.top().headers));
 
         if !inside_paste {
             if redraw {
@@ -1544,7 +1566,15 @@ fn main() {
             }
 
             if let Mode::Normal = mode {
-                window.mv(screen_y as i32, screen_x as i32);
+                match (screen_x, screen_y) {
+                    (Some(x), Some(y)) => {
+                        ncurses::curs_set(ncurses::CURSOR_VISIBILITY::CURSOR_VISIBLE);
+                        window.mv(y as i32, x as i32);
+                    },
+                    _ => {
+                        ncurses::curs_set(ncurses::CURSOR_VISIBILITY::CURSOR_INVISIBLE);
+                    }
+                }
             } else if let Mode::Filter { ref query_pos, .. } = mode {
                 window.mv(height as i32 - 1, 22 + query_pos.display_column as i32);
             }
