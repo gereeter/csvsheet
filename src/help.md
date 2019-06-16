@@ -2,7 +2,7 @@ Press Esc to exit from this help screen.
 
 The keyboard shortcuts are:
 ```
-F1                         Show this help text
+F1 or Ctrl+H               Show this help text
 Ctrl+Q                     Quit CSVsheet
 Ctrl+S                     Save the open file
 

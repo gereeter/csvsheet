@@ -864,7 +864,7 @@ fn main() {
         let mut new_mode = Mode::Normal;
         let mut warn_message: Option<Cow<'static, str>> = if startup {
             startup = false;
-            Some("Welcome to CSVsheet. Press F1 for help.".into())
+            Some("Welcome to CSVsheet. Press F1 or Ctrl+H for help.".into())
         } else {
             None
         };
@@ -1135,7 +1135,7 @@ fn main() {
                 window.set_clear_ok(true);
                 redraw = true;
             },
-            Some(key!(KEY_F1)) => {
+            Some(key!(KEY_HELP)) | Some(key!(KEY_F1)) | Some(key!(Ctrl + 'h')) => {
                 undo_state.prepare_edit(None, &document, &cursor);
                 new_mode = Mode::Help;
                 redraw = true;
