@@ -842,7 +842,6 @@ fn main() {
         in_cell_pos: TextPosition::beginning()
     };
     let mut data_entry_start_index = 0;
-    let mut data_entry_start_display_column = 0;
     let mut screen_x = Some(0);
     let mut screen_y = Some(0);
 
@@ -1042,7 +1041,6 @@ fn main() {
                         }
                     }
                     data_entry_start_index = cursor.col_index;
-                    data_entry_start_display_column = cursor.cell_display_column;
                     Some(&document.data[document.views.top().rows[cursor.row_index]][document.views.top().cols[cursor.col_index]])
                 });
                 cursor.in_cell_pos = new_pos;
@@ -1056,7 +1054,7 @@ fn main() {
                     let new_col_id = document.insert_col(document.col_numbers[current_col_id] + 1);
                     for upd_view in document.views.iter_mut() {
                         let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
-                        upd_view.cols.insert(index + 1, new_col_id);
+                        upd_view.cols.insert(index + 1, new_col_id); // TODO: Or at the end?
                     }
                     undo_state.push(UndoOp::DeleteCol(new_col_id));
                     redraw = true;
@@ -1064,6 +1062,29 @@ fn main() {
                 if cursor.col_index + 1 < document.views.top().cols.len() {
                     cursor.cell_display_column += document.column_widths[current_col_id] + 3;
                     cursor.col_index += 1;
+                    // TODO: or jump to the beginning?
+                    cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
+                }
+            },
+            Some(key!(Shift+'\t'))  => {
+                undo_state.prepare_edit(None, &document, &cursor);
+                let current_col_id = document.views.top().cols[cursor.col_index];
+                if cursor.col_index == 0 && !read_only {
+                    // TODO: is creating a new column really the right behaviour?
+                    let new_col_id = document.insert_col(0);
+                    for upd_view in document.views.iter_mut() {
+                        let index = upd_view.cols.iter().position(|&col_id| col_id == current_col_id).expect("Older view not superset of new view!");
+                        upd_view.cols.insert(index, new_col_id); // TODO: or at the beginning?
+                    }
+                    undo_state.push(UndoOp::DeleteCol(new_col_id));
+                    redraw = true;
+                    cursor.col_index += 1;
+                    cursor.cell_display_column += 3;
+                    data_entry_start_index += 1;
+                }
+                if cursor.col_index > 0 {
+                    cursor.col_index -= 1;
+                    cursor.cell_display_column -= document.column_widths[document.views.top().cols[cursor.col_index]] + 3;
                     // TODO: or jump to the beginning?
                     cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
                 }
@@ -1083,7 +1104,7 @@ fn main() {
                 if cursor.row_index + 1 < document.views.top().rows.len() {
                     cursor.row_index += 1;
                     cursor.col_index = data_entry_start_index;
-                    cursor.cell_display_column = data_entry_start_display_column;
+                    cursor.cell_display_column = document.views.top().cols.iter().take(cursor.col_index).map(|&col| document.column_widths[col]).sum::<usize>() + 3 * cursor.col_index;
                     // TODO: or jump to the beginning
                     cursor.in_cell_pos = TextPosition::end(get_cell(&document, &cursor));
                 }
@@ -1093,7 +1114,6 @@ fn main() {
                 pre_paste_undos = std::mem::replace(&mut undo_state.undo_stack, Vec::new());
                 inside_paste = true;
                 data_entry_start_index = cursor.col_index;
-                data_entry_start_display_column = cursor.cell_display_column;
             },
             Some((false, false, false, Input::Special(2001))) => { // End bracketed paste
                 undo_state.prepare_edit(None, &document, &cursor);

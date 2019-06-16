@@ -16,6 +16,7 @@ Ctrl+Home                  Move to the first row
 Ctrl+End                   Move to the last row
 
 Tab                        Move right one cell, remembering the current column
+Shift+Tab                  Move left one cell, remembering the current column
 Enter                      Move down one cell, jumping to the column at which
                                a series of Tabs started
 
