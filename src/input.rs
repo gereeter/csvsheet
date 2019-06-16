@@ -413,8 +413,8 @@ impl InputStream {
                     => return Ok((true, false, false, Input::Character(std::char::from_u32(chr as u32 + 96).unwrap()))),
                 Input::Character(chr) if (chr as u32) > 128 && (chr as u32) < 155 // TODO: Consider whitelist? Cancel is sometimes used for Backspace
                     => return Ok((true, true, false, Input::Character(std::char::from_u32(chr as u32 - 32).unwrap()))),
-                Input::Special(code @ 3001..=3026) => return Ok((true, true, false, Input::Special(code - 3000 + 96))),
-                Input::Special(code @ 3097..=3122) => return Ok((false, true, false, Input::Special(code - 3000))),
+                Input::Special(code @ 3001..=3026) => return Ok((true, true, false, Input::Character(std::char::from_u32(code as u32 - 3000 + 96).unwrap()))),
+                Input::Special(code @ 3097..=3122) => return Ok((false, true, false, Input::Character(std::char::from_u32(code as u32 - 3000).unwrap()))),
                 Input::Special(code @ 2300..=2399) => {
                     let base_code = code - 2300;
                     let mode = base_code / 10;
