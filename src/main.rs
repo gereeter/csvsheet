@@ -34,7 +34,7 @@ use csv::ReaderBuilder;
 use unicode_segmentation::GraphemeCursor;
 use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
 
-use ncurses::{A_BOLD, A_NORMAL};
+use ncurses::{A_NORMAL, A_BOLD, A_ITALIC, A_REVERSE};
 
 #[derive(Clone)]
 struct ShapedString {
@@ -762,6 +762,13 @@ fn main() {
                                     .arg(clap::Arg::with_name("read-only")
                                         .long("read-only")
                                         .help("Open the file in view-only mode where edits are forbidden"))
+                                    .arg(clap::Arg::with_name("header-style")
+                                        .long("header-style")
+                                        .takes_value(true)
+                                        .default_value("bold")
+                                        .possible_values(&["none", "bold", "italic", "reverse"])
+                                        .case_insensitive(true)
+                                        .help("Choose how to display headers"))
                                     .arg(clap::Arg::with_name("FILE")
                                         .help("Sets the file to view/edit")
                                         .required(true)
@@ -789,6 +796,14 @@ fn main() {
             None
         }
     })).unwrap_or(b',');
+
+    let header_style = match arg_matches.value_of("header-style") {
+        Some("none") => A_NORMAL(),
+        Some("bold") => A_BOLD(),
+        Some("italic") => A_ITALIC(),
+        Some("reverse") => A_REVERSE(),
+        _ => panic!("Unhandled header style!")
+    };
 
     let reader = ReaderBuilder::new().delimiter(delimiter)
                                      .has_headers(false) // we handle this ourselves
@@ -1497,7 +1512,7 @@ fn main() {
                     window.mv_add_str(0, 0, HELP_TEXT);
                 } else {
                     for y in 0..document.views.top().headers {
-                        display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, A_BOLD());
+                        display_row(&document, document.views.top().rows[y], &mut window, y, offset_x, offset_x + width, header_style);
                     }
 
                     for (row_i, &row) in document.views.top().rows.iter().skip(offset_y + document.views.top().headers).take(rows_shown - document.views.top().headers).enumerate() {
